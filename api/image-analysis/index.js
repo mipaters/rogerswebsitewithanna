@@ -4,7 +4,7 @@ const jsonHeaders = { 'Content-Type': 'application/json' }
 const allowedMimeTypes = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const maxImageBytes = 5 * 1024 * 1024
 const modemPrompt = `Analyze this customer-provided modem, gateway, router, or home-network image for troubleshooting. Describe visible evidence only: lights, equipment condition, error indicators, connection clues, and cable configuration. Do not claim to run a live network test or infer unseen facts. Return JSON with issueSummary, likelyRootCause, confidence (integer 0-100), and recommendedAction. State uncertainty and give safe steps only.`
-const billPrompt = `Analyze this image of a customer bill. Read clearly visible information only. Never repeat personal identifiers, account numbers, addresses, phone numbers, or payment details. Return JSON with exactly: issueSummary (short summary); likelyRootCause (explain visible charge changes or say unknown); confidence (integer 0-100); recommendedAction; provider (name or null); monthlyTotal (numeric recurring service total before tax, or null; never use amount due or one-time charges); services (array of mobile, internet, tv, home phone, other); lineCount (integer or null); charges (up to 5 objects with label and numeric amount); suggestions (up to 3 concise non-speculative suggestions). Never guess unreadable amounts; use null.`
+const billPrompt = `Analyze this image of a customer bill. Read clearly visible information only. Never repeat personal identifiers, account numbers, addresses, phone numbers, or payment details. Return JSON with exactly: issueSummary (short summary); likelyRootCause (explain visible charge changes or say unknown); confidence (integer 0-100); recommendedAction; provider (name or null); monthlyTotal (numeric recurring service total before tax, or null; never use amount due or one-time charges); services (array of mobile, internet, tv, home phone, other); lineCount (integer or null); includesDevicePayment (true only if a phone/device instalment or financing charge is visible, false if clearly none, else null); deviceModel (visible phone model or null); charges (up to 5 objects with label and numeric amount); suggestions (up to 3 concise non-speculative suggestions). Never guess unreadable amounts; use null.`
 const tradeInPrompt = `Analyze this customer-provided photo of a smartphone being considered for trade-in. Assess visible physical condition only: cracked or shattered screen or back glass, dents, bent frame, deep scratches, missing parts, camera lens damage, water-damage indicators, swelling or screen lifting, and whether the photo clearly shows the phone. Never claim to test function, battery health, or software state, and do not quote a trade-in value. Return JSON with exactly: issueSummary (short condition summary); likelyRootCause (visible damage and its likely cause, or none visible); confidence (integer 0-100); recommendedAction (practical next step); deviceDescription (visible make or model if identifiable, else null); condition (one of: good, fair, damaged, unclear); damageFindings (up to 5 short visible findings); tradeInOutlook (one of: worth-trading-in, limited-value, not-recommended, need-better-photo). Use need-better-photo with condition unclear if no phone is clearly visible.`
 const promptByType = { modem: modemPrompt, bill: billPrompt, tradeIn: tradeInPrompt }
 const analysisTypes = new Set(['modem', 'bill', 'tradeIn'])
@@ -60,7 +60,7 @@ module.exports = async function (context, req) {
             { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}`, detail: 'high' } },
           ] },
         ],
-        max_tokens: 500,
+        max_tokens: 700,
         temperature: 0.2,
         response_format: { type: 'json_object' },
       }),
@@ -90,6 +90,8 @@ module.exports = async function (context, req) {
       body.monthlyTotal = Number.isFinite(analysis.monthlyTotal) && analysis.monthlyTotal >= 0 ? analysis.monthlyTotal : null
       body.services = Array.isArray(analysis.services) ? analysis.services.filter((item) => ['mobile', 'internet', 'tv', 'home phone', 'other'].includes(item)).slice(0, 5) : []
       body.lineCount = Number.isInteger(analysis.lineCount) && analysis.lineCount > 0 && analysis.lineCount <= 20 ? analysis.lineCount : null
+      body.includesDevicePayment = typeof analysis.includesDevicePayment === 'boolean' ? analysis.includesDevicePayment : null
+      body.deviceModel = typeof analysis.deviceModel === 'string' ? analysis.deviceModel.slice(0, 80) : null
       body.charges = Array.isArray(analysis.charges) ? analysis.charges.filter((charge) => charge && typeof charge.label === 'string' && Number.isFinite(charge.amount)).slice(0, 5).map((charge) => ({ label: charge.label.slice(0, 100), amount: charge.amount })) : []
       body.suggestions = Array.isArray(analysis.suggestions) ? analysis.suggestions.filter((item) => typeof item === 'string').slice(0, 3).map((item) => item.slice(0, 240)) : []
     }

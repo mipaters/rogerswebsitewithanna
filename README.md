@@ -58,3 +58,7 @@ During an active Anna troubleshooting journey, customers can take a gateway/mode
 #### Bill review and competitor comparison journeys
 
 Anna can start a bill review when a customer asks to understand or explain a bill, then prompt for a photo upload. The Executive Demo Customer Care tile starts this bill-review flow. Compare with Competitors asks provider and service details, then analyzes a bill image and compares the visible recurring monthly total with illustrative Rogers reference rates. Annual savings are shown only when a recurring total is clearly detected; otherwise no savings number is invented. Bill image analysis uses the isolated image endpoint, redacts personal identifiers from model output by instruction, and asks customers to cover personal details before upload. Estimates are not quotes and require verification against current offers, eligibility, taxes, fees, discounts and equipment.
+
+## Rogers device pricing snapshot
+
+Monthly device pricing comes from `src/data/rogers-device-pricing.json`, captured from the public Rogers catalog behind https://www.rogers.com/phones (Ontario, new activation). It drives the Devices page, upgrade recommendations and the competitor-bill comparison. Refresh it with `node scripts/refresh-rogers-device-pricing.mjs`. Prices are after any bill credit; plan eligibility is not exposed by the feed, so figures are shown as references.

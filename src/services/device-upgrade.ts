@@ -87,15 +87,17 @@ function recommendDevice(
   budget: DeviceUpgradeBudget,
 ): PhoneProduct {
   const preferred = brand && brand !== 'Other' ? brand : null
-  const candidates = preferred ? productCards.filter((product) => product.line === preferred) : productCards
-  const targetLine = budget === 'under-30'
-    ? candidates.find((product) => /iPhone 17$|Galaxy S26$|Pixel 11/.test(product.name))
-    : budget === '30-to-50'
-      ? candidates.find((product) => /iPhone 18 Pro$/.test(product.name)) ?? candidates.find((product) => /Plus/.test(product.name)) ?? candidates.find((product) => /iPhone 17$|Galaxy S26$|Pixel 11/.test(product.name))
-      : priorities.includes('performance') || priorities.includes('camera') || priorities.includes('battery')
-        ? candidates.find((product) => /Pro Max|Ultra/.test(product.name)) ?? candidates[0]
-        : candidates.find((product) => /iPhone 18 Pro$/.test(product.name)) ?? candidates.find((product) => /Plus/.test(product.name)) ?? candidates[0]
-  return targetLine ?? productCards[0]
+  const candidates = (preferred ? productCards.filter((product) => product.line === preferred) : productCards)
+    .filter((product) => deviceMonthlyPrice(product) !== null)
+  const pool = candidates.length ? candidates : productCards
+  const price = (product: PhoneProduct) => deviceMonthlyPrice(product) ?? Infinity
+  const byPrice = [...pool].sort((a, b) => price(a) - price(b))
+  const within = (limit: number) => byPrice.filter((product) => price(product) <= limit)
+  const pick = (list: PhoneProduct[], top: boolean) => (top ? list[list.length - 1] : list[0])
+  const premium = priorities.some((priority) => priority !== 'value')
+  if (budget === 'under-30') return pick(within(30), premium) ?? byPrice[0]
+  if (budget === '30-to-50') return pick(within(50).filter((product) => price(product) > 30), premium) ?? pick(within(50), true) ?? byPrice[0]
+  return premium ? byPrice[byPrice.length - 1] : byPrice[Math.floor(byPrice.length / 2)]
 }
 
 export function deviceUpgradeQuestion(stage: DeviceUpgradeStage): string {

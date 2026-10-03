@@ -1,3 +1,5 @@
+import { devicePriceNote, formatMonthly, newPhones } from './device-pricing'
+
 export type Offer = {
   id: string
   eyebrow: string
@@ -288,22 +290,18 @@ export const additionalLinePrices = {
   ultimate: [85, 75, 65],
 }
 
-export const productCards: PhoneProduct[] = [
-  { name: 'iPhone 18 Pro Max', line: 'Apple', swatch: 'phone-purple', badge: 'Popular' },
-  {
-    name: 'iPhone 18 Pro',
-    line: 'Apple',
-    swatch: 'phone-purple',
-    badge: 'Featured',
-    monthlyPrice: '$37.47/mo.',
-    priceNote: '24 mos. at 0% APR with Save & Return and a Popular plan · $0 down',
-    details: ['256 GB, 512 GB, 1 TB or 2 TB', 'eSIM only', 'Full price: $1,799.28'],
-  },
-  { name: 'iPhone 17 Pro Max', line: 'Apple', swatch: 'phone-silver' },
-  { name: 'iPhone 17 Pro', line: 'Apple', swatch: 'phone-purple' },
-  { name: 'iPhone 17', line: 'Apple', swatch: 'phone-green' },
-  { name: 'Galaxy S26 Ultra', line: 'Samsung', swatch: 'phone-silver' },
-  { name: 'Galaxy S26 Plus', line: 'Samsung', swatch: 'phone-purple' },
-  { name: 'Galaxy S26', line: 'Samsung', swatch: 'phone-green' },
-  { name: 'Pixel 11', line: 'Google', swatch: 'phone-green' },
-]
+const phoneSwatches = ['phone-purple', 'phone-silver', 'phone-green']
+const phoneBrandOrder: PhoneProduct['line'][] = ['Apple', 'Samsung', 'Google']
+
+export const productCards: PhoneProduct[] = phoneBrandOrder.flatMap((line) => newPhones(line)
+  .sort((a, b) => b.fullPrice - a.fullPrice)
+  .filter((device, index, devices) => devices.findIndex((item) => item.name === device.name) === index)
+  .map((device, index): PhoneProduct => ({
+    name: device.name.replace(/^Samsung /, '').replace(/^Apple /, ''),
+    line,
+    swatch: phoneSwatches[index % phoneSwatches.length],
+    badge: device.availability === 'PREORDER_RESERVE' ? 'New' : undefined,
+    monthlyPrice: formatMonthly(device),
+    priceNote: devicePriceNote(device),
+    details: [device.storage, `Full price: $${device.fullPrice.toFixed(2)}`],
+  })))

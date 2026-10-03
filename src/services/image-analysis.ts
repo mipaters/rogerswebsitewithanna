@@ -7,6 +7,8 @@ export type ImageAnalysis = {
   monthlyTotal?: number | null
   services?: string[]
   lineCount?: number | null
+  includesDevicePayment?: boolean | null
+  deviceModel?: string | null
   charges?: { label: string; amount: number }[]
   suggestions?: string[]
   deviceDescription?: string | null
