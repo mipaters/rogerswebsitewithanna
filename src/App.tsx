@@ -5,7 +5,7 @@ import { isSpeechAvailable, listenOnce, SpeechCancelledError, SpeechNoMatchError
 import { azureCapabilities } from './config/azure'
 import { analyzeModemImage, ImageAnalysis } from './services/image-analysis'
 import { additionalLinePrices, bankCards, catalog, featuredPromotions, homeSecurityOffer, mobilePlans, offerSnapshotDate, offers, productCards } from './services/offers'
-import { beginTroubleshooting, completeDiagnostics, isTroubleshootingRequest, recordTroubleshootingResponse, TroubleshootingState, troubleshootingReply } from './services/troubleshooting'
+import { beginTroubleshooting, completeDiagnostics, isModemImageShareRequest, isTroubleshootingRequest, recordTroubleshootingResponse, TroubleshootingState, troubleshootingReply } from './services/troubleshooting'
 import { advanceDeviceUpgrade, beginDeviceUpgrade, describeDeviceMatch, deviceMonthlyPrice, deviceUpgradeQuestion, DeviceUpgradeStage, DeviceUpgradeState, isDeviceUpgradeRequest } from './services/device-upgrade'
 import { answerDemoJourney, currentDemoJourneyStep, demoJourneyOpening, DemoJourneyId, DemoJourneyState, startDemoJourney } from './services/demo-journeys'
 
@@ -261,6 +261,13 @@ function App() {
     setChatError('')
     setSending(true)
     try {
+      const recentContext = messages.slice(-8).map((message) => message.content).join(' ')
+      if (isModemImageShareRequest(text, recentContext)) {
+        const imageJourney = troubleshooting ?? beginTroubleshooting('modem diagnostics')
+        activateTroubleshooting(imageJourney)
+        setMessages([...next, { role: 'assistant', content: 'Yes—you can share a clear photo of your modem or gateway. Use Take a photo or Upload an image below, and I’ll check the visible lights, connections, and error indicators.' }])
+        return
+      }
       const changingMind = /\b(?:don't|do not|no longer|changed my mind|instead|rather|forget)\b/i.test(text)
       if (changingMind && deviceUpgrade && deviceUpgrade.stage !== 'recommendation' && isPlanJourneyRequest(text)) {
         console.info('[Anna journey] switching from device upgrade to mobile plan')

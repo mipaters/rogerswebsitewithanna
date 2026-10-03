@@ -79,6 +79,11 @@ export function detectTroubleshootingIssue(message: string): TroubleshootingIssu
   return Object.entries(issuePrompts).find(([, pattern]) => pattern.test(message))?.[0] as TroubleshootingIssueType | undefined ?? null
 }
 
+export function isModemImageShareRequest(message: string, recentContext: string): boolean {
+  const asksToShareImage = /\b(photo|picture|image|snapshot)\b/i.test(message)
+    && /\b(can i|could i|may i|share|send|upload|attach|take|show|look at|view|analy[sz]e|check)\b/i.test(message)
+  return asksToShareImage && /\b(modem|gateway|router|wi-?fi|internet|connection|signal|lights?)\b/i.test(recentContext)
+}
 export function isTroubleshootingRequest(message: string): boolean {
   return detectTroubleshootingIssue(message) !== null
     || /\b(modem diagnostics?|gateway status|modem lights?|signal issue|signal problem|service issue|technical support|troubleshoot|internet.*(?:problem|issue)|wifi.*(?:problem|issue)|wi-fi.*(?:problem|issue))\b/i.test(message)
@@ -163,6 +168,7 @@ export function recordTroubleshootingResponse(state: TroubleshootingState, respo
 
 export function troubleshootingReply(state: TroubleshootingState, response?: string): string {
   if (state.stage === 'identify') {
+    if (!state.issueType) return 'Yes—you can share a clear photo of your modem or gateway. Use Take a photo or Upload an image below, or choose an issue type to continue.'
     if (state.issueType === 'Limited WiFi Coverage') {
       return `I can help improve the ${state.affectedRoom ? `${state.affectedRoom} ` : ''}WiFi. Is the main issue weak signal, slow speeds, frequent disconnects, or buffering and streaming?`
     }
