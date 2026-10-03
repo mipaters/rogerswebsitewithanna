@@ -1,7 +1,7 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react'
 import { ChatMessage, CustomerProfile, emptyCustomerProfile, JourneyStage, PlanRecommendation, askGpt, sendMessage } from './services/assistant'
 import { isRelevantToJourney } from './services/relevance'
-import { isSpeechAvailable, listenOnce, speak, stopSpeaking } from './services/speech'
+import { isSpeechAvailable, listenOnce, SpeechCancelledError, SpeechNoMatchError, speak, stopListening, stopSpeaking } from './services/speech'
 import { azureCapabilities } from './config/azure'
 import { additionalLinePrices, bankCards, catalog, featuredPromotions, homeSecurityOffer, mobilePlans, offerSnapshotDate, offers, productCards } from './services/offers'
 import { beginTroubleshooting, completeDiagnostics, isTroubleshootingRequest, recordTroubleshootingResponse, TroubleshootingState, troubleshootingReply } from './services/troubleshooting'
@@ -94,6 +94,13 @@ function App() {
   const [speechReady, setSpeechReady] = useState(false)
   const [listening, setListening] = useState(false)
   const [readAloud, setReadAloud] = useState(false)
+  const [voiceMode, setVoiceMode] = useState(false)
+  const [speaking, setSpeaking] = useState(false)
+  const [listenTick, setListenTick] = useState(0)
+  const speakingRef = useRef(false)
+  const speakId = useRef(0)
+  const spokenCount = useRef(0)
+  const submitRef = useRef<(event?: FormEvent, content?: string) => Promise<void>>(async () => {})
   const [sending, setSending] = useState(false)
   const [chatError, setChatError] = useState('')
   const [email, setEmail] = useState('')
@@ -108,24 +115,65 @@ function App() {
     return () => { active = false }
   }, [annaOpen])
   useEffect(() => {
-    if (!readAloud) { stopSpeaking(); return }
+    if (!readAloud) {
+      stopSpeaking()
+      speakingRef.current = false
+      setSpeaking(false)
+      spokenCount.current = messages.length
+      return
+    }
     const last = messages[messages.length - 1]
-    if (last?.role === 'assistant') void speak(last.content)
+    if (messages.length > spokenCount.current && last?.role === 'assistant') {
+      const id = ++speakId.current
+      speakingRef.current = true
+      setSpeaking(true)
+      void speak(last.content).finally(() => {
+        if (speakId.current !== id) return
+        speakingRef.current = false
+        setSpeaking(false)
+      })
+    }
+    spokenCount.current = messages.length
   }, [messages, readAloud])
-  async function startListening() {
-    if (listening || sending) return
-    stopSpeaking()
+  useEffect(() => {
+    if (!annaOpen && voiceMode) setVoiceMode(false)
+    if (!annaOpen) stopSpeaking()
+  }, [annaOpen, voiceMode])
+  useEffect(() => {
+    if (!voiceMode || !annaOpen || sending || speaking || speakingRef.current) return
+    let cancelled = false
     setListening(true)
     setChatError('')
-    try {
-      const transcript = await listenOnce()
-      setListening(false)
-      await submitMessage(undefined, transcript)
-    } catch (error) {
-      setChatError(error instanceof Error ? error.message : 'Voice input failed. Please try again.')
-    } finally {
+    listenOnce()
+      .then(async (transcript) => {
+        if (cancelled) return
+        setListening(false)
+        if (/\b(stop|end|quit|turn off|disable)\b.*\b(listening|voice|microphone|mic)\b/i.test(transcript)) {
+          setVoiceMode(false)
+          return
+        }
+        await submitRef.current(undefined, transcript)
+      })
+      .catch((error) => {
+        if (cancelled || error instanceof SpeechCancelledError) return
+        setListening(false)
+        if (error instanceof SpeechNoMatchError) { setListenTick((tick) => tick + 1); return }
+        setVoiceMode(false)
+        setChatError(error instanceof Error ? error.message : 'Voice input failed. Please try again.')
+      })
+    return () => {
+      cancelled = true
+      stopListening()
       setListening(false)
     }
+  }, [voiceMode, annaOpen, sending, speaking, listenTick])
+  function toggleVoiceMode() {
+    if (voiceMode) {
+      setVoiceMode(false)
+      return
+    }
+    if (azureCapabilities.speechOutput) setReadAloud(true)
+    setVoiceMode(true)
   }  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, sending])
   useEffect(() => { window.scrollTo({ top: 0, behavior: 'smooth' }) }, [page])
   useEffect(() => {
@@ -266,8 +314,12 @@ function App() {
     }
   }
 
+  submitRef.current = submitMessage
+
   function resetConversation() {
     if (sending) return
+    setVoiceMode(false)
+    stopListening()
     setMessages(initialMessages)
     setCustomerProfile(emptyCustomerProfile)
     setPlanJourneyStarted(false)
@@ -435,7 +487,7 @@ function App() {
         {messages.length === 1 && <div className="suggestion-chips"><span className="suggestion-heading">Popular requests</span>{commonRequests.map((request) => <button key={request.label} onClick={() => submitMessage(undefined, request.prompt)} disabled={sending}>{request.label} <Icon name="arrow" size={13} /></button>)}</div>}
         {messages.length === 1 && <button className="troubleshooting-demo-button" onClick={runTroubleshootingDemo} disabled={sending}><Icon name="play" size={14} /> Demo Walkthrough: bedroom WiFi fix</button>}
         {planJourneyStarted && currentJourneyStage && <JourneyQuickReplies stage={currentJourneyStage} onSelect={(answer) => submitMessage(undefined, answer)} disabled={sending} />}
-        <form className="chat-composer" onSubmit={(event) => submitMessage(event)}><input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submitMessage() } }} placeholder="Ask Anna anything..." aria-label="Message Anna" disabled={sending} />{speechReady && azureCapabilities.speechInput && <button type="button" className={listening ? 'voice-button is-active' : 'voice-button'} onClick={() => void startListening()} disabled={sending || listening} aria-label={listening ? 'Listening' : 'Speak to Anna'} aria-pressed={listening}><Icon name="mic" size={17} /></button>}{speechReady && azureCapabilities.speechOutput && <button type="button" className={readAloud ? 'voice-button is-active' : 'voice-button'} onClick={() => setReadAloud(!readAloud)} aria-label="Read Anna's replies aloud" aria-pressed={readAloud}><Icon name="speaker" size={17} /></button>}<button type="submit" disabled={!input.trim() || sending} aria-label="Send message"><Icon name="send" size={17} /></button></form>
+        <form className="chat-composer" onSubmit={(event) => submitMessage(event)}><input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submitMessage() } }} placeholder="Ask Anna anything..." aria-label="Message Anna" disabled={sending} />{speechReady && azureCapabilities.speechInput && <button type="button" className={voiceMode ? 'voice-button is-active' : 'voice-button'} onClick={toggleVoiceMode} aria-label={voiceMode ? 'Stop listening' : 'Start voice conversation'} aria-pressed={voiceMode} title={voiceMode ? (listening ? 'Listening… click to stop' : 'Voice conversation on — click to stop') : 'Start voice conversation'}><Icon name="mic" size={17} /></button>}{speechReady && azureCapabilities.speechOutput && <button type="button" className={readAloud ? 'voice-button is-active' : 'voice-button'} onClick={() => setReadAloud(!readAloud)} aria-label="Read Anna's replies aloud" aria-pressed={readAloud}><Icon name="speaker" size={17} /></button>}<button type="submit" disabled={!input.trim() || sending} aria-label="Send message"><Icon name="send" size={17} /></button></form>
         <p className="chat-disclaimer">Anna uses AI and can make mistakes. Don’t share sensitive info.</p>
       </aside>}
 
