@@ -18,7 +18,11 @@ module.exports = async function (context, req) {
     return
   }
 
+  // TEMP DIAGNOSTICS: remove [Anna Debug] logging when done.
+  console.log('[Anna Debug] AZURE_OPENAI_ENDPOINT exists:', Boolean(config.azureOpenAIEndpoint))
+  console.log('[Anna Debug] AZURE_OPENAI_API_KEY exists:', Boolean(config.azureOpenAIAPIKey))
   if (!config.azureOpenAIEndpoint || !config.azureOpenAIAPIKey) {
+    console.log('[Anna Debug] Using demoReply fallback: true (endpoint or key missing)')
     context.res = {
       status: 200,
       body: { reply: demoReply(String(messages[messages.length - 1].content || '')) },
@@ -28,6 +32,8 @@ module.exports = async function (context, req) {
 
   const endpoint = config.azureOpenAIEndpoint.replace(/\/+$/, '')
   const url = `${endpoint}/openai/deployments/${encodeURIComponent(config.azureOpenAIDeployment)}/chat/completions?api-version=${encodeURIComponent(config.azureOpenAIAPIVersion)}`
+  console.log('[Anna Debug] Calling URL:', url)
+  console.log('[Anna Debug] Using demoReply fallback: false')
   try {
     const response = await fetch(url, {
       method: 'POST',
@@ -50,9 +56,12 @@ module.exports = async function (context, req) {
         temperature: 0.6,
       }),
     })
+    console.log('[Anna Debug] Azure HTTP status:', response.status)
     if (!response.ok) {
+      const azureError = await response.text()
+      console.log('[Anna Debug] Azure error body:', azureError)
       context.log.error(`Azure OpenAI request failed (${response.status}).`)
-      context.res = { status: 502, body: { error: 'Anna is temporarily unavailable. Please try again.' } }
+      context.res = { status: 502, body: { error: 'Anna is temporarily unavailable. Please try again.', debug: { azureStatus: response.status, azureBody: azureError } } }
       return
     }
     const data = await response.json()
