@@ -1,5 +1,6 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react'
-import { ChatMessage, CustomerProfile, emptyCustomerProfile, JourneyStage, PlanRecommendation, sendMessage } from './services/assistant'
+import { ChatMessage, CustomerProfile, emptyCustomerProfile, JourneyStage, PlanRecommendation, askGpt, sendMessage } from './services/assistant'
+import { isRelevantToJourney } from './services/relevance'
 import { additionalLinePrices, bankCards, catalog, featuredPromotions, homeSecurityOffer, mobilePlans, offerSnapshotDate, offers, productCards } from './services/offers'
 import { beginTroubleshooting, completeDiagnostics, isTroubleshootingRequest, recordTroubleshootingResponse, TroubleshootingState, troubleshootingReply } from './services/troubleshooting'
 import { advanceDeviceUpgrade, beginDeviceUpgrade, describeDeviceMatch, deviceMonthlyPrice, deviceUpgradeQuestion, DeviceUpgradeStage, DeviceUpgradeState, isDeviceUpgradeRequest } from './services/device-upgrade'
@@ -150,7 +151,20 @@ function App() {
     setChatError('')
     setSending(true)
     try {
-      if (executiveJourney && !executiveJourney.complete) {
+      const journeyActive = Boolean(
+        (executiveJourney && !executiveJourney.complete)
+        || (troubleshooting && troubleshooting.stage !== 'resolved')
+        || (deviceUpgrade && deviceUpgrade.stage !== 'recommendation')
+        || (planJourneyStarted && currentJourneyStage),
+      )
+      const stepOptions = executiveJourney && !executiveJourney.complete ? currentDemoJourneyStep(executiveJourney)?.options ?? [] : []
+      if (journeyActive && !isRelevantToJourney(text, stepOptions)) {
+        console.info('[Anna journey] off-topic message sent to GPT; journey state unchanged')
+        const reply = await askGpt(next, customerProfile)
+        setMessages([...next, { role: 'assistant', content: reply }])
+        setSending(false)
+        return
+      }      if (executiveJourney && !executiveJourney.complete) {
         const updated = answerDemoJourney(executiveJourney, text)
         setExecutiveJourney(updated)
         const step = currentDemoJourneyStep(updated)
