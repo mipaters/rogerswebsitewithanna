@@ -3,6 +3,7 @@ import { ChatMessage, CustomerProfile, emptyCustomerProfile, JourneyStage, PlanR
 import { isRelevantToJourney } from './services/relevance'
 import { isSpeechAvailable, listenOnce, SpeechCancelledError, SpeechNoMatchError, speak, stopListening, stopSpeaking } from './services/speech'
 import { azureCapabilities } from './config/azure'
+import { analyzeModemImage, ImageAnalysis } from './services/image-analysis'
 import { additionalLinePrices, bankCards, catalog, featuredPromotions, homeSecurityOffer, mobilePlans, offerSnapshotDate, offers, productCards } from './services/offers'
 import { beginTroubleshooting, completeDiagnostics, isTroubleshootingRequest, recordTroubleshootingResponse, TroubleshootingState, troubleshootingReply } from './services/troubleshooting'
 import { advanceDeviceUpgrade, beginDeviceUpgrade, describeDeviceMatch, deviceMonthlyPrice, deviceUpgradeQuestion, DeviceUpgradeStage, DeviceUpgradeState, isDeviceUpgradeRequest } from './services/device-upgrade'
@@ -57,7 +58,9 @@ const walkthroughs = [
   { id: 'multimodal', title: 'Multimodal Care', text: 'A glimpse at the future of connected support.', icon: 'play' as IconName, prompt: 'What kinds of support can you help with today, and what’s coming next?' },
 ]
 
-const initialMessages: ChatMessage[] = [{
+type AnnaMessage = ChatMessage & { imageDataUrl?: string; imageAnalysis?: ImageAnalysis }
+
+const initialMessages: AnnaMessage[] = [{
   role: 'assistant',
   content: 'Hi, I’m Anna 👋 I can help you find a plan, choose a device, troubleshoot your internet and more. What can I help with?',
 }]
@@ -81,13 +84,14 @@ function App() {
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchText, setSearchText] = useState('')
   const [mobileMenu, setMobileMenu] = useState(false)
-  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages)
+  const [messages, setMessages] = useState<AnnaMessage[]>(initialMessages)
   const [customerProfile, setCustomerProfile] = useState<CustomerProfile>(emptyCustomerProfile)
   const [planJourneyStarted, setPlanJourneyStarted] = useState(false)
   const [completedJourneyQuestions, setCompletedJourneyQuestions] = useState<JourneyStage[]>([])
   const [currentJourneyStage, setCurrentJourneyStage] = useState<JourneyStage | null>(null)
   const [planRecommendation, setPlanRecommendation] = useState<PlanRecommendation>()
   const [troubleshooting, setTroubleshooting] = useState<TroubleshootingState | null>(null)
+  const [imageAnalyzing, setImageAnalyzing] = useState(false)
   const [deviceUpgrade, setDeviceUpgrade] = useState<DeviceUpgradeState | null>(null)
   const [executiveJourney, setExecutiveJourney] = useState<DemoJourneyState | null>(null)
   const [input, setInput] = useState('')
@@ -221,6 +225,32 @@ function App() {
     setSearchOpen(false)
   }
 
+  async function analyzeTroubleshootingImage(file: File) {
+    if (imageAnalyzing || sending) return
+    const accepted = ['image/jpeg', 'image/png', 'image/webp']
+    if (!accepted.includes(file.type) || file.size > 5 * 1024 * 1024) {
+      setChatError(!accepted.includes(file.type) ? 'Choose a JPG, JPEG, PNG, or WEBP image.' : 'The image must be 5 MB or smaller.')
+      return
+    }
+    setChatError('')
+    setImageAnalyzing(true)
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Could not read the image.'))
+        reader.onerror = () => reject(new Error('Could not read the image.'))
+        reader.readAsDataURL(file)
+      })
+      setMessages((current) => [...current, { role: 'user', content: 'Modem or gateway image uploaded.', imageDataUrl: dataUrl }])
+      const { analysis } = await analyzeModemImage(file, dataUrl)
+      setMessages((current) => [...current, { role: 'assistant', content: analysis.issueSummary, imageAnalysis: analysis }])
+    } catch (error) {
+      setChatError(error instanceof Error ? error.message : 'Image analysis failed. Please try again.')
+    } finally {
+      setImageAnalyzing(false)
+    }
+  }
+
   async function submitMessage(event?: FormEvent, content = input) {
     event?.preventDefault()
     const text = content.trim()
@@ -347,10 +377,11 @@ function App() {
   submitRef.current = submitMessage
 
   function resetConversation() {
-    if (sending) return
+    if (sending || imageAnalyzing) return
     setVoiceMode(false)
     stopListening()
     setMessages(initialMessages)
+    setImageAnalyzing(false)
     setCustomerProfile(emptyCustomerProfile)
     setPlanJourneyStarted(false)
     setCompletedJourneyQuestions([])
@@ -500,24 +531,24 @@ function App() {
       {annaOpen && <aside className="anna-panel" aria-label="Chat with Anna" aria-modal="true" role="dialog">
         <div className="anna-header">
           <div className="anna-avatar"><Icon name="spark" size={22} /></div><div className="anna-heading"><strong>Anna</strong><span><i /> Your Rogers assistant</span></div>
-          <button className="chat-reset" onClick={resetConversation} disabled={sending} aria-label="Start a new conversation with Anna" title="Start a new conversation"><Icon name="reset" size={15} /><span>New chat</span></button>
+          <button className="chat-reset" onClick={resetConversation} disabled={sending || imageAnalyzing} aria-label="Start a new conversation with Anna" title="Start a new conversation"><Icon name="reset" size={15} /><span>New chat</span></button>
           <button className="panel-close" onClick={() => setAnnaOpen(false)} aria-label="Close Anna chat"><Icon name="close" /></button>
         </div>
         <div className="anna-context"><Icon name="shield" size={14} /> Helpful answers, here whenever you need them</div>
         <div className="chat-messages" aria-live="polite">
-          {messages.map((message, index) => <div key={`${index}-${message.role}`} className={`chat-message ${message.role === 'user' ? 'chat-user' : 'chat-assistant'}`}>{message.role === 'assistant' && <span className="tiny-anna"><Icon name="spark" size={13} /></span>}<p>{message.content}</p></div>)}
-          {sending && <div className="typing-indicator" aria-label="Anna is typing"><span /><span /><span /></div>}
-          {chatError && <div className="chat-error" role="alert">{chatError} <button onClick={() => submitMessage(undefined, messages[messages.length - 1]?.content || '')}>Try again</button></div>}
+          {messages.map((message, index) => <div key={`${index}-${message.role}`} className={`chat-message ${message.role === 'user' ? 'chat-user' : 'chat-assistant'}`}>{message.role === 'assistant' && <span className="tiny-anna"><Icon name="spark" size={13} /></span>}<div className="chat-message-content"><p>{message.content}</p>{message.imageDataUrl && <img className="chat-image-attachment" src={message.imageDataUrl} alt="Customer-uploaded modem or gateway" />}{message.imageAnalysis && <ImageAnalysisCard analysis={message.imageAnalysis} />}</div></div>)}
+          {(sending || imageAnalyzing) && <div className="typing-indicator" aria-label={imageAnalyzing ? "Anna is analyzing the image" : "Anna is typing"}><span /><span /><span /></div>}
+          {chatError && <div className="chat-error" role="alert">{chatError} {messages[messages.length - 1]?.imageDataUrl ? <button onClick={() => setChatError('')}>Dismiss</button> : <button onClick={() => submitMessage(undefined, messages[messages.length - 1]?.content || '')}>Try again</button>}</div>}
           <div ref={chatEndRef} />
         </div>
-        {troubleshooting && <TroubleshootingExperience state={troubleshooting} onSelect={(answer) => submitMessage(undefined, answer)} disabled={sending} />}
+        {troubleshooting && <TroubleshootingExperience state={troubleshooting} onSelect={(answer) => submitMessage(undefined, answer)} onImage={analyzeTroubleshootingImage} imageAnalyzing={imageAnalyzing} disabled={sending || imageAnalyzing} />}
         {planRecommendation && !troubleshooting && <RecommendationSummary profile={customerProfile} recommendation={planRecommendation} onAdd={() => addRecommendationToCart(planRecommendation)} />}
         {deviceUpgrade && <DeviceUpgradePanel state={deviceUpgrade} onSelect={(answer) => submitMessage(undefined, answer)} onAdd={() => deviceUpgrade.recommendation && addUpgradeDeviceToCart(deviceUpgrade.recommendation.name)} onBrowse={() => { setAnnaOpen(false); navigate('devices') }} disabled={sending} />}
         {executiveJourney && <ExecutiveJourneyPanel state={executiveJourney} onSelect={(answer) => submitMessage(undefined, answer)} disabled={sending} />}
         {messages.length === 1 && <div className="suggestion-chips"><span className="suggestion-heading">Popular requests</span>{commonRequests.map((request) => <button key={request.label} onClick={() => submitMessage(undefined, request.prompt)} disabled={sending}>{request.label} <Icon name="arrow" size={13} /></button>)}</div>}
         {messages.length === 1 && <button className="troubleshooting-demo-button" onClick={runTroubleshootingDemo} disabled={sending}><Icon name="play" size={14} /> Demo Walkthrough: bedroom WiFi fix</button>}
         {planJourneyStarted && currentJourneyStage && <JourneyQuickReplies stage={currentJourneyStage} onSelect={(answer) => submitMessage(undefined, answer)} disabled={sending} />}
-        <form className="chat-composer" onSubmit={(event) => submitMessage(event)}><input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submitMessage() } }} placeholder="Ask Anna anything..." aria-label="Message Anna" disabled={sending} />{speechReady && azureCapabilities.speechInput && <button type="button" className={voiceMode ? 'voice-button is-active' : 'voice-button'} onClick={toggleVoiceMode} aria-label={voiceMode ? 'Stop listening' : 'Start voice conversation'} aria-pressed={voiceMode} title={voiceMode ? (listening ? 'Listening… click to stop' : 'Voice conversation on — click to stop') : 'Start voice conversation'}><Icon name="mic" size={17} /></button>}{speechReady && azureCapabilities.speechOutput && <button type="button" className={readAloud ? 'voice-button is-active' : 'voice-button'} onClick={() => setReadAloud(!readAloud)} aria-label="Read Anna's replies aloud" aria-pressed={readAloud}><Icon name="speaker" size={17} /></button>}<button type="submit" disabled={!input.trim() || sending} aria-label="Send message"><Icon name="send" size={17} /></button></form>
+        <form className="chat-composer" onSubmit={(event) => submitMessage(event)}><input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submitMessage() } }} placeholder="Ask Anna anything..." aria-label="Message Anna" disabled={sending || imageAnalyzing} />{speechReady && azureCapabilities.speechInput && <button type="button" className={voiceMode ? 'voice-button is-active' : 'voice-button'} onClick={toggleVoiceMode} aria-label={voiceMode ? 'Stop listening' : 'Start voice conversation'} aria-pressed={voiceMode} title={voiceMode ? (listening ? 'Listening… click to stop' : 'Voice conversation on — click to stop') : 'Start voice conversation'}><Icon name="mic" size={17} /></button>}{speechReady && azureCapabilities.speechOutput && <button type="button" className={readAloud ? 'voice-button is-active' : 'voice-button'} onClick={() => setReadAloud(!readAloud)} aria-label="Read Anna's replies aloud" aria-pressed={readAloud}><Icon name="speaker" size={17} /></button>}<button type="submit" disabled={!input.trim() || sending || imageAnalyzing} aria-label="Send message"><Icon name="send" size={17} /></button></form>
         <p className="chat-disclaimer">Anna uses AI and can make mistakes. Don’t share sensitive info.</p>
       </aside>}
 
@@ -575,7 +606,11 @@ function DeviceUpgradePanel({ state, onSelect, onAdd, onBrowse, disabled }: { st
   </section>
 }
 
-function TroubleshootingExperience({ state, onSelect, disabled }: { state: TroubleshootingState; onSelect: (answer: string) => void; disabled: boolean }) {
+function ImageAnalysisCard({ analysis }: { analysis: ImageAnalysis }) {
+  return <section className="image-analysis-card" aria-label="Modem image analysis"><strong>Visual troubleshooting</strong><dl><div><dt>Issue summary</dt><dd>{analysis.issueSummary}</dd></div><div><dt>Likely cause</dt><dd>{analysis.likelyRootCause}</dd></div><div><dt>Confidence</dt><dd>{analysis.confidence}%</dd></div><div><dt>Recommended next step</dt><dd>{analysis.recommendedAction}</dd></div></dl><small>Based only on what is visible in the image. Not a live network diagnostic.</small></section>
+}
+
+function TroubleshootingExperience({ state, onSelect, onImage, imageAnalyzing, disabled }: { state: TroubleshootingState; onSelect: (answer: string) => void; onImage: (file: File) => void; imageAnalyzing: boolean; disabled: boolean }) {
   const diagnostic = state.diagnosticResults
   const issueOptions: { label: string; answer: string }[] = state.issueType === 'Limited WiFi Coverage' ? [
     { label: 'Weak signal', answer: 'Weak signal' },
@@ -626,7 +661,8 @@ function TroubleshootingExperience({ state, onSelect, disabled }: { state: Troub
       'Continue advanced diagnostics',
     ].map((option) => <button key={option} onClick={() => onSelect(option)} disabled={disabled}>{option}<Icon name="arrow" size={13} /></button>)}</div></div>}
     {state.stage === 'resolved' && <div className="resolved-summary"><strong><Icon name="check" size={16} /> Issue Resolved</strong><p>{state.resolutionSummary}</p><small>{state.completedSteps.length} troubleshooting step{state.completedSteps.length === 1 ? '' : 's'} recorded · Your reported issue and responses remain in this chat.</small></div>}
-    <div className="multimodal-placeholder"><span>More ways to get help</span><div><button disabled title="Coming soon">Upload modem photo</button><button disabled title="Coming soon">Share error screenshot</button><button disabled title="Coming soon">Record modem lights</button><button disabled title="Coming soon">Voice support</button></div><small>Photo, video and voice support coming soon</small></div>
+    {(!state.issueType || ['Complete Internet Outage', 'Slow Internet', 'Limited WiFi Coverage', 'Device Connectivity Issue'].includes(state.issueType)) && <div className="troubleshooting-image-upload"><strong>Modem &amp; WiFi image diagnostics</strong><p>Share a clear photo of your gateway, lights, or cable connections. Avoid including personal information.</p><div className="troubleshooting-image-actions"><label className="troubleshooting-image-button">Take a photo<input type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" capture="environment" disabled={disabled || imageAnalyzing} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) onImage(file) }} /></label><label className="troubleshooting-image-button">Upload an image<input type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" disabled={disabled || imageAnalyzing} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) onImage(file) }} /></label></div><small>JPG, JPEG, PNG, or WEBP · Up to 5 MB. AI visual guidance only; not a live network test.</small>{imageAnalyzing && <small role="status">Analyzing your image…</small>}</div>}
+    {state.issueType !== 'TV/Streaming Issue' && state.issueType !== 'Smart Home Issue' && <div className="multimodal-placeholder"><span>Additional support capabilities</span><div><button disabled title="Coming soon">Share error screenshot</button><button disabled title="Coming soon">Record modem lights</button><button disabled title="Coming soon">Live voice support</button></div><small>Additional video and live support options are coming soon</small></div>}
   </section>
 }
 

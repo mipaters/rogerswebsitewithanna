@@ -33,7 +33,7 @@ export type TroubleshootingState = {
 }
 
 const issuePrompts: Record<TroubleshootingIssueType, RegExp> = {
-  'Complete Internet Outage': /\b(internet|wi-?fi|connection|online)\b.{0,35}\b(down|outage|out|not working|isn't working|is not working|no connection|offline)\b|\b(no internet|internet is down|internet outage|can't connect|cannot connect|modem.{0,20}flashing orange|flashing orange.{0,20}modem)\b/i,
+  'Complete Internet Outage': /\b(modem|gateway|router|internet|wi-?fi|connection|online)\b.{0,35}\b(down|outage|out|not working|isn't working|is not working|no connection|offline)\b|\b(no internet|internet is down|internet outage|can't connect|cannot connect|modem.{0,20}flashing orange|flashing orange.{0,20}modem)\b/i,
   'Slow Internet': /\b(slow internet|internet is slow|slow wifi|slow wi-fi|lag(?:ging)?|game(?:s|ing)? online|work calls? keep dropping|calls? keep dropping|unstable connection|connection is unstable)\b/i,
   'Limited WiFi Coverage': /\b(bad|weak|poor|limited|spotty|no)\b.{0,25}\b(wi-?fi|signal|coverage|reception)\b|\b(wi-?fi|signal|coverage)\b.{0,25}\b(bedroom|room|basement|upstairs|downstairs|weak|poor|bad|dead zone)\b|\bsome rooms\b|\bbedroom has bad wi-?fi\b/i,
   'TV/Streaming Issue': /\b(tv|television|netflix|stream(?:ing)?|buffer(?:ing)?)\b.{0,35}\b(not working|isn't working|is not working|buffer|freeze|issue|problem|won't load|keeps|keeps buffering|error)\b|\b(tv isn't working|tv not working|streaming keeps buffering|netflix keeps buffering)\b/i,
@@ -81,7 +81,7 @@ export function detectTroubleshootingIssue(message: string): TroubleshootingIssu
 
 export function isTroubleshootingRequest(message: string): boolean {
   return detectTroubleshootingIssue(message) !== null
-    || /\b(troubleshoot|service issue|technical support|internet.*(?:problem|issue)|wifi.*(?:problem|issue)|wi-fi.*(?:problem|issue))\b/i.test(message)
+    || /\b(modem diagnostics?|gateway status|modem lights?|signal issue|signal problem|service issue|technical support|troubleshoot|internet.*(?:problem|issue)|wifi.*(?:problem|issue)|wi-fi.*(?:problem|issue))\b/i.test(message)
 }
 
 export function beginTroubleshooting(message: string, demoMode = false): TroubleshootingState {

@@ -50,3 +50,7 @@ The Anna panel includes a **Demo Walkthrough** that runs the poor-bedroom-WiFi s
 ## Offer, device, security, card and company pages
 
 Mobile plans, phone catalog entries, Home Security features and Rogers Bank card summaries are stored in `src/services/offers.ts` so future product feeds can replace the reference data without changing page components. The home page’s MLSE “Learn more” action opens the in-app About Rogers landing page. Pricing, financing and card benefits reflect public information captured on October 3, 2026; they are not live offers. Confirm current pricing, eligibility and terms with Rogers or Rogers Bank.
+
+#### Modem image troubleshooting
+
+During an active Anna troubleshooting journey, customers can take a gateway/modem photo or upload a JPG/JPEG, PNG, or WEBP image (maximum 5 MB). The separate POST /api/image-analysis Azure Function sends the image to the configured Azure OpenAI deployment and returns a visual issue summary, likely cause, confidence, and recommended next step. Images are shown inline in chat with Anna's analysis. The endpoint requires the existing server-side AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT, and API version settings; it never stores or logs image data. This is visual guidance only, not a live network diagnostic.
