@@ -19,7 +19,7 @@ Deploy the repository as the Static Web Apps app and set its API location to `ap
 - `AZURE_OPENAI_API_KEY`
 - `AZURE_OPENAI_DEPLOYMENT` (for example, a deployment named `gpt-4.1-mini`)
 - `AZURE_OPENAI_API_VERSION`
-- `AZURE_SPEECH_KEY` and `AZURE_SPEECH_REGION` (reserved for future speech support)
+- `AZURE_SPEECH_KEY` and `AZURE_SPEECH_REGION` (used by /api/speech-token to issue short-lived tokens for voice input and spoken replies; the key never reaches the browser)
 
 Keep credentials out of frontend build-time variables. The browser only calls `/api/chat`, so Azure OpenAI secrets stay in the server-side Function configuration. The Anna client and capability flags are separated so speech, uploads, video and live support can be added without changing the chat surface.
 
