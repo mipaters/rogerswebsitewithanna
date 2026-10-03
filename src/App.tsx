@@ -1,13 +1,15 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react'
 import { ChatMessage, CustomerProfile, emptyCustomerProfile, JourneyStage, PlanRecommendation, askGpt, sendMessage } from './services/assistant'
 import { isRelevantToJourney } from './services/relevance'
+import { isSpeechAvailable, listenOnce, speak, stopSpeaking } from './services/speech'
+import { azureCapabilities } from './config/azure'
 import { additionalLinePrices, bankCards, catalog, featuredPromotions, homeSecurityOffer, mobilePlans, offerSnapshotDate, offers, productCards } from './services/offers'
 import { beginTroubleshooting, completeDiagnostics, isTroubleshootingRequest, recordTroubleshootingResponse, TroubleshootingState, troubleshootingReply } from './services/troubleshooting'
 import { advanceDeviceUpgrade, beginDeviceUpgrade, describeDeviceMatch, deviceMonthlyPrice, deviceUpgradeQuestion, DeviceUpgradeStage, DeviceUpgradeState, isDeviceUpgradeRequest } from './services/device-upgrade'
 import { answerDemoJourney, currentDemoJourneyStep, demoJourneyOpening, DemoJourneyId, DemoJourneyState, startDemoJourney } from './services/demo-journeys'
 
 type Page = 'home' | 'mobile' | 'internet' | 'tv' | 'smartHome' | 'homePhone' | 'devices' | 'support' | 'account' | 'cart' | 'checkout' | 'bank' | 'about'
-type IconName = 'search' | 'person' | 'cart' | 'chevron' | 'arrow' | 'close' | 'menu' | 'spark' | 'send' | 'reset' | 'wifi' | 'phone' | 'home' | 'play' | 'shield' | 'globe' | 'check'
+type IconName = 'search' | 'person' | 'cart' | 'chevron' | 'arrow' | 'close' | 'menu' | 'spark' | 'send' | 'reset' | 'wifi' | 'phone' | 'home' | 'play' | 'shield' | 'globe' | 'check' | 'mic' | 'speaker'
 
 function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -19,6 +21,8 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     close: <><path d="m18 6-12 12M6 6l12 12" /></>,
     menu: <><path d="M4 7h16M4 12h16M4 17h16" /></>,
     spark: <><path d="m12 3 1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6L12 3Z" /><path d="m19 16 .7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7L19 16Z" /></>,
+    mic: <><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></>,
+    speaker: <><path d="M4 9v6h4l5 4V5L8 9H4Z" /><path d="M16.5 8.5a5 5 0 0 1 0 7" /></>,
     send: <><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></>,
     reset: <><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8" /><path d="M3 3v5h5" /></>,
     wifi: <><path d="M5 9a11 11 0 0 1 14 0M8 12a6.5 6.5 0 0 1 8 0m-5 3a2 2 0 0 1 2 0" /><circle cx="12" cy="18" r="1" /></>,
@@ -87,6 +91,9 @@ function App() {
   const [deviceUpgrade, setDeviceUpgrade] = useState<DeviceUpgradeState | null>(null)
   const [executiveJourney, setExecutiveJourney] = useState<DemoJourneyState | null>(null)
   const [input, setInput] = useState('')
+  const [speechReady, setSpeechReady] = useState(false)
+  const [listening, setListening] = useState(false)
+  const [readAloud, setReadAloud] = useState(false)
   const [sending, setSending] = useState(false)
   const [chatError, setChatError] = useState('')
   const [email, setEmail] = useState('')
@@ -94,7 +101,32 @@ function App() {
   const [checkoutStep, setCheckoutStep] = useState(1)
   const chatEndRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, sending])
+  useEffect(() => {
+    if (!annaOpen || !(azureCapabilities.speechInput || azureCapabilities.speechOutput)) return
+    let active = true
+    void isSpeechAvailable().then((ok) => { if (active) setSpeechReady(ok) })
+    return () => { active = false }
+  }, [annaOpen])
+  useEffect(() => {
+    if (!readAloud) { stopSpeaking(); return }
+    const last = messages[messages.length - 1]
+    if (last?.role === 'assistant') void speak(last.content)
+  }, [messages, readAloud])
+  async function startListening() {
+    if (listening || sending) return
+    stopSpeaking()
+    setListening(true)
+    setChatError('')
+    try {
+      const transcript = await listenOnce()
+      setListening(false)
+      await submitMessage(undefined, transcript)
+    } catch (error) {
+      setChatError(error instanceof Error ? error.message : 'Voice input failed. Please try again.')
+    } finally {
+      setListening(false)
+    }
+  }  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, sending])
   useEffect(() => { window.scrollTo({ top: 0, behavior: 'smooth' }) }, [page])
   useEffect(() => {
     if (troubleshooting) console.info(`[Anna troubleshooting] current stage: ${troubleshooting.stage}`, { issueType: troubleshooting.issueType, affectedRoom: troubleshooting.affectedRoom, completedSteps: troubleshooting.completedSteps.length })
@@ -403,7 +435,7 @@ function App() {
         {messages.length === 1 && <div className="suggestion-chips"><span className="suggestion-heading">Popular requests</span>{commonRequests.map((request) => <button key={request.label} onClick={() => submitMessage(undefined, request.prompt)} disabled={sending}>{request.label} <Icon name="arrow" size={13} /></button>)}</div>}
         {messages.length === 1 && <button className="troubleshooting-demo-button" onClick={runTroubleshootingDemo} disabled={sending}><Icon name="play" size={14} /> Demo Walkthrough: bedroom WiFi fix</button>}
         {planJourneyStarted && currentJourneyStage && <JourneyQuickReplies stage={currentJourneyStage} onSelect={(answer) => submitMessage(undefined, answer)} disabled={sending} />}
-        <form className="chat-composer" onSubmit={(event) => submitMessage(event)}><input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submitMessage() } }} placeholder="Ask Anna anything..." aria-label="Message Anna" disabled={sending} /><button type="submit" disabled={!input.trim() || sending} aria-label="Send message"><Icon name="send" size={17} /></button></form>
+        <form className="chat-composer" onSubmit={(event) => submitMessage(event)}><input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submitMessage() } }} placeholder="Ask Anna anything..." aria-label="Message Anna" disabled={sending} />{speechReady && azureCapabilities.speechInput && <button type="button" className={listening ? 'voice-button is-active' : 'voice-button'} onClick={() => void startListening()} disabled={sending || listening} aria-label={listening ? 'Listening' : 'Speak to Anna'} aria-pressed={listening}><Icon name="mic" size={17} /></button>}{speechReady && azureCapabilities.speechOutput && <button type="button" className={readAloud ? 'voice-button is-active' : 'voice-button'} onClick={() => setReadAloud(!readAloud)} aria-label="Read Anna's replies aloud" aria-pressed={readAloud}><Icon name="speaker" size={17} /></button>}<button type="submit" disabled={!input.trim() || sending} aria-label="Send message"><Icon name="send" size={17} /></button></form>
         <p className="chat-disclaimer">Anna uses AI and can make mistakes. Don’t share sensitive info.</p>
       </aside>}
 

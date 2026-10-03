@@ -1,7 +1,7 @@
 export const azureCapabilities = {
   textChat: true,
-  speechInput: false,
-  speechOutput: false,
+  speechInput: true,
+  speechOutput: true,
   imageUploads: false,
   videoUploads: false,
   screenSharing: false,
