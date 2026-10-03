@@ -1,5 +1,5 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react'
-import { ChatMessage, CustomerProfile, emptyCustomerProfile, JourneyStage, PlanRecommendation, askGpt, sendMessage } from './services/assistant'
+import { ChatMessage, CustomerProfile, emptyCustomerProfile, JourneyStage, PlanRecommendation, askGpt, isPlanJourneyRequest, sendMessage } from './services/assistant'
 import { isRelevantToJourney } from './services/relevance'
 import { isSpeechAvailable, listenOnce, SpeechCancelledError, SpeechNoMatchError, speak, stopListening, stopSpeaking } from './services/speech'
 import { azureCapabilities } from './config/azure'
@@ -231,6 +231,36 @@ function App() {
     setChatError('')
     setSending(true)
     try {
+      const changingMind = /\b(?:don't|do not|no longer|changed my mind|instead|rather|forget)\b/i.test(text)
+      if (changingMind && deviceUpgrade && deviceUpgrade.stage !== 'recommendation' && isPlanJourneyRequest(text)) {
+        console.info('[Anna journey] switching from device upgrade to mobile plan')
+        setDeviceUpgrade(null)
+        setTroubleshooting(null)
+        setExecutiveJourney(null)
+        setPlanRecommendation(undefined)
+        setCompletedJourneyQuestions([])
+        const result = await sendMessage(next, customerProfile, false, [], null)
+        setCustomerProfile(result.profile)
+        setPlanJourneyStarted(result.journeyStarted)
+        setCompletedJourneyQuestions(result.completedQuestions)
+        setCurrentJourneyStage(result.currentStage)
+        setPlanRecommendation(result.recommendation)
+        setMessages([...next, { role: 'assistant', content: result.reply }])
+        return
+      }
+      if (changingMind && planJourneyStarted && isDeviceUpgradeRequest(text)) {
+        console.info('[Anna journey] switching from mobile plan to device upgrade')
+        setPlanJourneyStarted(false)
+        setCompletedJourneyQuestions([])
+        setCurrentJourneyStage(null)
+        setPlanRecommendation(undefined)
+        setTroubleshooting(null)
+        setExecutiveJourney(null)
+        const startedUpgrade = beginDeviceUpgrade()
+        setDeviceUpgrade(startedUpgrade)
+        setMessages([...next, { role: 'assistant', content: deviceUpgradeQuestion(startedUpgrade.stage) }])
+        return
+      }
       const journeyActive = Boolean(
         (executiveJourney && !executiveJourney.complete)
         || (troubleshooting && troubleshooting.stage !== 'resolved')

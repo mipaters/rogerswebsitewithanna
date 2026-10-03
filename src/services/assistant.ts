@@ -62,6 +62,11 @@ export const emptyCustomerProfile: CustomerProfile = {
 }
 
 const planIntent = /\b(plan|mobile|wireless|data plan|recommend(?:ation)?)\b/i
+
+export function isPlanJourneyRequest(message: string): boolean {
+  return planIntent.test(message) && /\b(new|need|looking|want|recommend|help|find|switch|change)\b/i.test(message)
+}
+
 const journeyOrder: JourneyStage[] = ['dataAndLines', 'mobileProvider', 'device', 'phoneUsage', 'travel', 'homeServices', 'budget']
 const journeyQuestions: Record<JourneyStage, string> = {
   dataAndLines: 'How much mobile data do you typically use each month, and how many lines do you need? For example, “50 GB and one line.”',
@@ -86,7 +91,7 @@ export async function sendMessage(
   currentStage: JourneyStage | null,
 ): Promise<AssistantReply> {
   const latestUserMessage = [...messages].reverse().find((message) => message.role === 'user')?.content ?? ''
-  const started = journeyStarted || (planIntent.test(latestUserMessage) && /\b(new|need|looking|want|recommend|help|find|switch|change)\b/i.test(latestUserMessage))
+  const started = journeyStarted || isPlanJourneyRequest(latestUserMessage)
   const activeJourney = started
   const correctionStage = journeyStarted && currentStage === null ? correctedStage(latestUserMessage) : null
   const answerStage = currentStage ?? correctionStage
