@@ -3,12 +3,24 @@ export type ImageAnalysis = {
   likelyRootCause: string
   confidence: number
   recommendedAction: string
+  provider?: string | null
+  monthlyTotal?: number | null
+  services?: string[]
+  lineCount?: number | null
+  charges?: { label: string; amount: number }[]
+  suggestions?: string[]
+  deviceDescription?: string | null
+  condition?: 'good' | 'fair' | 'damaged' | 'unclear'
+  damageFindings?: string[]
+  tradeInOutlook?: 'worth-trading-in' | 'limited-value' | 'not-recommended' | 'need-better-photo'
 }
 
 const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const maxImageBytes = 5 * 1024 * 1024
 
-export async function analyzeModemImage(file: File, previewDataUrl?: string): Promise<{ dataUrl: string; analysis: ImageAnalysis }> {
+export type ImageAnalysisType = 'modem' | 'bill' | 'tradeIn'
+
+export async function analyzeImage(file: File, previewDataUrl?: string, analysisType: ImageAnalysisType = 'modem'): Promise<{ dataUrl: string; analysis: ImageAnalysis }> {
   if (!allowedTypes.has(file.type)) throw new Error('Choose a JPG, JPEG, PNG, or WEBP image.')
   if (file.size > maxImageBytes) throw new Error('The image must be 5 MB or smaller.')
   const dataUrl = previewDataUrl ?? await readAsDataUrl(file)
@@ -16,7 +28,7 @@ export async function analyzeModemImage(file: File, previewDataUrl?: string): Pr
   const response = await fetch('/api/image-analysis', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ image: base64, mimeType: file.type }),
+    body: JSON.stringify({ image: base64, mimeType: file.type, analysisType }),
   })
   const result = await response.json().catch(() => null)
   if (!response.ok) throw new Error(result?.error || 'Image analysis is temporarily unavailable.')

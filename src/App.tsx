@@ -3,10 +3,11 @@ import { ChatMessage, CustomerProfile, emptyCustomerProfile, JourneyStage, PlanR
 import { isRelevantToJourney } from './services/relevance'
 import { isSpeechAvailable, listenOnce, SpeechCancelledError, SpeechNoMatchError, speak, stopListening, stopSpeaking } from './services/speech'
 import { azureCapabilities } from './config/azure'
-import { analyzeModemImage, ImageAnalysis } from './services/image-analysis'
+import { analyzeImage, ImageAnalysis, ImageAnalysisType } from './services/image-analysis'
+import { answerBillJourney, beginBillJourney, BillJourneyKind, BillJourneyState, billJourneyPrompt, estimateRogersMonthly, detectBillJourneyKind, isBillImageShareRequest } from './services/bill-journey'
 import { additionalLinePrices, bankCards, catalog, featuredPromotions, homeSecurityOffer, mobilePlans, offerSnapshotDate, offers, productCards } from './services/offers'
 import { beginTroubleshooting, completeDiagnostics, isModemImageShareRequest, isTroubleshootingRequest, recordTroubleshootingResponse, TroubleshootingState, troubleshootingReply } from './services/troubleshooting'
-import { advanceDeviceUpgrade, beginDeviceUpgrade, describeDeviceMatch, deviceMonthlyPrice, deviceUpgradeQuestion, DeviceUpgradeStage, DeviceUpgradeState, isDeviceUpgradeRequest } from './services/device-upgrade'
+import { advanceDeviceUpgrade, beginDeviceUpgrade, completeTradeIn, describeDeviceMatch, deviceMonthlyPrice, deviceUpgradeQuestion, DeviceUpgradeStage, DeviceUpgradeState, isDeviceUpgradeRequest, tradeInAssessmentReply } from './services/device-upgrade'
 import { answerDemoJourney, currentDemoJourneyStep, demoJourneyOpening, DemoJourneyId, DemoJourneyState, startDemoJourney } from './services/demo-journeys'
 
 type Page = 'home' | 'mobile' | 'internet' | 'tv' | 'smartHome' | 'homePhone' | 'devices' | 'support' | 'account' | 'cart' | 'checkout' | 'bank' | 'about'
@@ -58,7 +59,7 @@ const walkthroughs = [
   { id: 'multimodal', title: 'Multimodal Care', text: 'A glimpse at the future of connected support.', icon: 'play' as IconName, prompt: 'What kinds of support can you help with today, and what’s coming next?' },
 ]
 
-type AnnaMessage = ChatMessage & { imageDataUrl?: string; imageAnalysis?: ImageAnalysis }
+type AnnaMessage = ChatMessage & { imageDataUrl?: string; imageAnalysis?: ImageAnalysis; imageAnalysisType?: ImageAnalysisType; billComparison?: { provider: string; currentMonthly: number | null; rogersMonthly: number | null; annualSavings: number | null } }
 
 const initialMessages: AnnaMessage[] = [{
   role: 'assistant',
@@ -92,6 +93,7 @@ function App() {
   const [planRecommendation, setPlanRecommendation] = useState<PlanRecommendation>()
   const [troubleshooting, setTroubleshooting] = useState<TroubleshootingState | null>(null)
   const [imageAnalyzing, setImageAnalyzing] = useState(false)
+  const [billJourney, setBillJourney] = useState<BillJourneyState | null>(null)
   const [deviceUpgrade, setDeviceUpgrade] = useState<DeviceUpgradeState | null>(null)
   const [executiveJourney, setExecutiveJourney] = useState<DemoJourneyState | null>(null)
   const [input, setInput] = useState('')
@@ -225,7 +227,23 @@ function App() {
     setSearchOpen(false)
   }
 
-  async function analyzeTroubleshootingImage(file: File) {
+  function runBillJourney(kind: BillJourneyKind) {
+    if (sending || imageAnalyzing) return
+    setDemoOpen(false)
+    setAnnaOpen(true)
+    setTroubleshooting(null)
+    setDeviceUpgrade(null)
+    setExecutiveJourney(null)
+    setPlanJourneyStarted(false)
+    setCompletedJourneyQuestions([])
+    setCurrentJourneyStage(null)
+    setPlanRecommendation(undefined)
+    const state = beginBillJourney(kind)
+    setBillJourney(state)
+    setMessages([...initialMessages, { role: 'assistant', content: billJourneyPrompt(state) }])
+  }
+
+  async function analyzeJourneyImage(file: File) {
     if (imageAnalyzing || sending) return
     const accepted = ['image/jpeg', 'image/png', 'image/webp']
     if (!accepted.includes(file.type) || file.size > 5 * 1024 * 1024) {
@@ -241,9 +259,24 @@ function App() {
         reader.onerror = () => reject(new Error('Could not read the image.'))
         reader.readAsDataURL(file)
       })
-      setMessages((current) => [...current, { role: 'user', content: 'Modem or gateway image uploaded.', imageDataUrl: dataUrl }])
-      const { analysis } = await analyzeModemImage(file, dataUrl)
-      setMessages((current) => [...current, { role: 'assistant', content: analysis.issueSummary, imageAnalysis: analysis }])
+      const analysisType: ImageAnalysisType = deviceUpgrade?.stage === 'tradeIn' ? 'tradeIn' : billJourney ? 'bill' : 'modem'
+      const uploadLabel = analysisType === 'tradeIn' ? 'Trade-in phone image uploaded.' : analysisType === 'bill' ? 'Bill image uploaded.' : 'Modem or gateway image uploaded.'
+      setMessages((current) => [...current, { role: 'user', content: uploadLabel, imageDataUrl: dataUrl, imageAnalysisType: analysisType }])
+      const { analysis } = await analyzeImage(file, dataUrl, analysisType)
+      if (analysisType === 'tradeIn' && deviceUpgrade) {
+        const retake = analysis.tradeInOutlook === 'need-better-photo'
+        if (!retake) setDeviceUpgrade(completeTradeIn(deviceUpgrade, analysis))
+        setMessages((current) => [...current, { role: 'assistant', content: `${tradeInAssessmentReply(analysis)}${retake ? '' : ' Here’s a phone to consider next.'}`, imageAnalysis: analysis, imageAnalysisType: analysisType }])
+        return
+      }
+      const services = billJourney?.services ?? (analysis.services?.join(' + ') || null)
+      const rogersMonthly = billJourney?.kind === 'compare' ? estimateRogersMonthly(services, analysis.lineCount ?? null) : null
+      const provider = billJourney?.provider ?? analysis.provider ?? 'your current provider'
+      const currentMonthly = analysis.monthlyTotal ?? null
+      const annualSavings = currentMonthly !== null && rogersMonthly !== null ? Math.round((currentMonthly - rogersMonthly) * 12 * 100) / 100 : null
+      const billComparison = billJourney?.kind === 'compare' ? { provider, currentMonthly, rogersMonthly, annualSavings } : undefined
+      setMessages((current) => [...current, { role: 'assistant', content: analysis.issueSummary, imageAnalysis: analysis, imageAnalysisType: analysisType, billComparison }])
+      if (billJourney) setBillJourney(null)
     } catch (error) {
       setChatError(error instanceof Error ? error.message : 'Image analysis failed. Please try again.')
     } finally {
@@ -261,8 +294,36 @@ function App() {
     setChatError('')
     setSending(true)
     try {
-      const recentContext = messages.slice(-8).map((message) => message.content).join(' ')
-      if (isModemImageShareRequest(text, recentContext)) {
+      const recentUserMessages = messages.filter((message) => message.role === 'user').slice(-1)
+      const recentUserContext = recentUserMessages.map((message) => message.content).join(' ')
+      const contextualBillKind = [...recentUserMessages].reverse().map((message) => detectBillJourneyKind(message.content)).find((kind) => kind !== null) ?? null
+      const currentBillKind = detectBillJourneyKind(text)
+      const contextualBillPhoto = isBillImageShareRequest(text, recentUserContext)
+      const requestedBillKind = currentBillKind ?? (contextualBillPhoto ? billJourney?.kind ?? contextualBillKind ?? 'billing' : null)
+      if (requestedBillKind && billJourney?.kind !== requestedBillKind) {
+        const started = beginBillJourney(requestedBillKind)
+        setBillJourney(started)
+        setTroubleshooting(null)
+        setDeviceUpgrade(null)
+        setExecutiveJourney(null)
+        setPlanJourneyStarted(false)
+        setCompletedJourneyQuestions([])
+        setCurrentJourneyStage(null)
+        setPlanRecommendation(undefined)
+        setMessages([...next, { role: 'assistant', content: billJourneyPrompt(started) }])
+        return
+      }
+      if (billJourney && billJourney.stage === 'upload' && /\b(photo|picture|image|snapshot|bill|upload|send|share)\b/i.test(text)) {
+        setMessages([...next, { role: 'assistant', content: billJourneyPrompt(billJourney) }])
+        return
+      }
+      if (billJourney && billJourney.stage !== 'upload') {
+        const updated = answerBillJourney(billJourney, text)
+        setBillJourney(updated)
+        setMessages([...next, { role: 'assistant', content: billJourneyPrompt(updated) }])
+        return
+      }
+      if (isModemImageShareRequest(text, recentUserContext)) {
         const imageJourney = troubleshooting ?? beginTroubleshooting('modem diagnostics')
         activateTroubleshooting(imageJourney)
         setMessages([...next, { role: 'assistant', content: 'Yes—you can share a clear photo of your modem or gateway. Use Take a photo or Upload an image below, and I’ll check the visible lights, connections, and error indicators.' }])
@@ -345,6 +406,11 @@ function App() {
         setSending(false)
         return
       }
+      if (deviceUpgrade?.stage === 'tradeIn' && /\b(yes|yeah|yep|sure|have|trade)\b/i.test(text) && !/\b(no|not|don't|dont|skip|without)\b/i.test(text)) {
+        setMessages([...next, { role: 'assistant', content: 'Great—choose Take a photo or Upload an image below. Please show the full front of the phone, and the back too if you can.' }])
+        setSending(false)
+        return
+      }
       if (deviceUpgrade && deviceUpgrade.stage !== 'recommendation') {
         const updated = advanceDeviceUpgrade(deviceUpgrade, text)
         setDeviceUpgrade(updated)
@@ -389,6 +455,7 @@ function App() {
     stopListening()
     setMessages(initialMessages)
     setImageAnalyzing(false)
+    setBillJourney(null)
     setCustomerProfile(emptyCustomerProfile)
     setPlanJourneyStarted(false)
     setCompletedJourneyQuestions([])
@@ -408,6 +475,7 @@ function App() {
   }
 
   function runExecutiveJourney(id: DemoJourneyId, prompt: string) {
+    setBillJourney(null)
     if (sending) return
     setDemoOpen(false)
     const journey = startDemoJourney(id)
@@ -430,6 +498,7 @@ function App() {
   }
 
   function runDeviceUpgradeJourney() {
+    setBillJourney(null)
     if (sending) return
     setDemoOpen(false)
     const startedUpgrade = beginDeviceUpgrade()
@@ -466,6 +535,7 @@ function App() {
   }
 
   function activateTroubleshooting(state: TroubleshootingState) {
+    setBillJourney(null)
     setTroubleshooting(state)
     setDeviceUpgrade(null)
       setExecutiveJourney(null)
@@ -543,14 +613,15 @@ function App() {
         </div>
         <div className="anna-context"><Icon name="shield" size={14} /> Helpful answers, here whenever you need them</div>
         <div className="chat-messages" aria-live="polite">
-          {messages.map((message, index) => <div key={`${index}-${message.role}`} className={`chat-message ${message.role === 'user' ? 'chat-user' : 'chat-assistant'}`}>{message.role === 'assistant' && <span className="tiny-anna"><Icon name="spark" size={13} /></span>}<div className="chat-message-content"><p>{message.content}</p>{message.imageDataUrl && <img className="chat-image-attachment" src={message.imageDataUrl} alt="Customer-uploaded modem or gateway" />}{message.imageAnalysis && <ImageAnalysisCard analysis={message.imageAnalysis} />}</div></div>)}
+          {messages.map((message, index) => <div key={`${index}-${message.role}`} className={`chat-message ${message.role === 'user' ? 'chat-user' : 'chat-assistant'}`}>{message.role === 'assistant' && <span className="tiny-anna"><Icon name="spark" size={13} /></span>}<div className="chat-message-content"><p>{message.content}</p>{message.imageDataUrl && <img className="chat-image-attachment" src={message.imageDataUrl} alt={message.imageAnalysisType === 'bill' ? 'Customer-uploaded bill' : message.imageAnalysisType === 'tradeIn' ? 'Customer-uploaded trade-in phone' : 'Customer-uploaded modem or gateway'} />}{message.imageAnalysis && <ImageAnalysisCard analysis={message.imageAnalysis} analysisType={message.imageAnalysisType ?? 'modem'} comparison={message.billComparison} />}</div></div>)}
           {(sending || imageAnalyzing) && <div className="typing-indicator" aria-label={imageAnalyzing ? "Anna is analyzing the image" : "Anna is typing"}><span /><span /><span /></div>}
           {chatError && <div className="chat-error" role="alert">{chatError} {messages[messages.length - 1]?.imageDataUrl ? <button onClick={() => setChatError('')}>Dismiss</button> : <button onClick={() => submitMessage(undefined, messages[messages.length - 1]?.content || '')}>Try again</button>}</div>}
           <div ref={chatEndRef} />
         </div>
-        {troubleshooting && <TroubleshootingExperience state={troubleshooting} onSelect={(answer) => submitMessage(undefined, answer)} onImage={analyzeTroubleshootingImage} imageAnalyzing={imageAnalyzing} disabled={sending || imageAnalyzing} />}
+        {troubleshooting && <TroubleshootingExperience state={troubleshooting} onSelect={(answer) => submitMessage(undefined, answer)} onImage={analyzeJourneyImage} imageAnalyzing={imageAnalyzing} disabled={sending || imageAnalyzing} />}
+        {billJourney && <BillJourneyPanel state={billJourney} onSelect={(answer) => submitMessage(undefined, answer)} onImage={analyzeJourneyImage} imageAnalyzing={imageAnalyzing} disabled={sending || imageAnalyzing} />}
         {planRecommendation && !troubleshooting && <RecommendationSummary profile={customerProfile} recommendation={planRecommendation} onAdd={() => addRecommendationToCart(planRecommendation)} />}
-        {deviceUpgrade && <DeviceUpgradePanel state={deviceUpgrade} onSelect={(answer) => submitMessage(undefined, answer)} onAdd={() => deviceUpgrade.recommendation && addUpgradeDeviceToCart(deviceUpgrade.recommendation.name)} onBrowse={() => { setAnnaOpen(false); navigate('devices') }} disabled={sending} />}
+        {deviceUpgrade && <DeviceUpgradePanel state={deviceUpgrade} onImage={analyzeJourneyImage} imageAnalyzing={imageAnalyzing} onSelect={(answer) => submitMessage(undefined, answer)} onAdd={() => deviceUpgrade.recommendation && addUpgradeDeviceToCart(deviceUpgrade.recommendation.name)} onBrowse={() => { setAnnaOpen(false); navigate('devices') }} disabled={sending} />}
         {executiveJourney && <ExecutiveJourneyPanel state={executiveJourney} onSelect={(answer) => submitMessage(undefined, answer)} disabled={sending} />}
         {messages.length === 1 && <div className="suggestion-chips"><span className="suggestion-heading">Popular requests</span>{commonRequests.map((request) => <button key={request.label} onClick={() => submitMessage(undefined, request.prompt)} disabled={sending}>{request.label} <Icon name="arrow" size={13} /></button>)}</div>}
         {messages.length === 1 && <button className="troubleshooting-demo-button" onClick={runTroubleshootingDemo} disabled={sending}><Icon name="play" size={14} /> Demo Walkthrough: bedroom WiFi fix</button>}
@@ -559,7 +630,7 @@ function App() {
         <p className="chat-disclaimer">Anna uses AI and can make mistakes. Don’t share sensitive info.</p>
       </aside>}
 
-      {demoOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDemoOpen(false) }}><section className="demo-modal" role="dialog" aria-modal="true" aria-labelledby="demo-title"><div className="demo-modal-top"><span className="demo-kicker"><Icon name="spark" size={16} /> ROGERS EXPERIENCE STUDIO</span><button className="panel-close" onClick={() => setDemoOpen(false)} aria-label="Close executive demo"><Icon name="close" /></button></div><h2 id="demo-title">A more personal kind<br />of connection.</h2><p className="demo-intro">Explore how AI can make every customer moment feel more thoughtful. Choose a journey to begin.</p><div className="walkthrough-grid">{walkthroughs.map((item, index) => <button key={item.id} className="walkthrough-tile" onClick={() => item.id === 'upgrade' ? runDeviceUpgradeJourney() : item.id === 'sales' ? runWalkthrough(item.prompt) : runExecutiveJourney(item.id as DemoJourneyId, item.prompt)}><span className="tile-icon"><Icon name={item.icon} size={19} /></span><span className="tile-number">0{index + 1}</span><strong>{item.title}</strong><small>{item.text}</small><span className="tile-arrow"><Icon name="arrow" size={16} /></span></button>)}</div><div className="demo-modal-foot"><span><i className="online-dot" /> Interactive preview</span><span>Powered by Rogers AI</span></div></section></div>}
+      {demoOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDemoOpen(false) }}><section className="demo-modal" role="dialog" aria-modal="true" aria-labelledby="demo-title"><div className="demo-modal-top"><span className="demo-kicker"><Icon name="spark" size={16} /> ROGERS EXPERIENCE STUDIO</span><button className="panel-close" onClick={() => setDemoOpen(false)} aria-label="Close executive demo"><Icon name="close" /></button></div><h2 id="demo-title">A more personal kind<br />of connection.</h2><p className="demo-intro">Explore how AI can make every customer moment feel more thoughtful. Choose a journey to begin.</p><div className="walkthrough-grid">{walkthroughs.map((item, index) => <button key={item.id} className="walkthrough-tile" onClick={() => item.id === 'upgrade' ? runDeviceUpgradeJourney() : item.id === 'sales' ? runWalkthrough(item.prompt) : item.id === 'care' ? runBillJourney('billing') : item.id === 'compare' ? runBillJourney('compare') : runExecutiveJourney(item.id as DemoJourneyId, item.prompt)}><span className="tile-icon"><Icon name={item.icon} size={19} /></span><span className="tile-number">0{index + 1}</span><strong>{item.title}</strong><small>{item.text}</small><span className="tile-arrow"><Icon name="arrow" size={16} /></span></button>)}</div><div className="demo-modal-foot"><span><i className="online-dot" /> Interactive preview</span><span>Powered by Rogers AI</span></div></section></div>}
     </>
   )
 }
@@ -575,7 +646,7 @@ function ExecutiveJourneyPanel({ state, onSelect, disabled }: { state: DemoJourn
   </section>
 }
 
-function DeviceUpgradePanel({ state, onSelect, onAdd, onBrowse, disabled }: { state: DeviceUpgradeState; onSelect: (answer: string) => void; onAdd: () => void; onBrowse: () => void; disabled: boolean }) {
+function DeviceUpgradePanel({ state, onImage, imageAnalyzing, onSelect, onAdd, onBrowse, disabled }: { state: DeviceUpgradeState; onImage: (file: File) => void; imageAnalyzing: boolean; onSelect: (answer: string) => void; onAdd: () => void; onBrowse: () => void; disabled: boolean }) {
   const options: Record<Exclude<DeviceUpgradeStage, 'recommendation'>, { label: string; answer: string }[]> = {
     currentDevice: [
       { label: 'Apple iPhone', answer: 'I currently use an iPhone' },
@@ -594,11 +665,14 @@ function DeviceUpgradePanel({ state, onSelect, onAdd, onBrowse, disabled }: { st
       { label: '$30–$50/mo.', answer: 'Around $30 to $50 per month' },
       { label: 'Flexible', answer: 'Flexible for the right phone' },
     ],
+    tradeIn: [
+      { label: 'No trade-in', answer: 'No trade-in, skip' },
+    ],
   }
   const product = state.recommendation
   return <section className="upgrade-journey-card" aria-label="Guided phone upgrade">
-    <div className="upgrade-journey-heading"><span className="upgrade-heading-icon"><Icon name="phone" size={16} /></span><div><strong>{product ? 'Your phone match' : 'Phone upgrade journey'}</strong><small>{product ? 'Personalized to your preferences' : `Step ${state.stage === 'currentDevice' ? 1 : state.stage === 'priorities' ? 2 : 3} of 3 · ${state.stage === 'currentDevice' ? 'Current phone' : state.stage === 'priorities' ? 'What matters most' : 'Monthly budget'}`}</small></div></div>
-    {!product && state.stage !== 'recommendation' && <div className="upgrade-quick-replies"><span>{deviceUpgradeQuestion(state.stage)}</span><div>{options[state.stage].map((option) => <button key={option.label} onClick={() => onSelect(option.answer)} disabled={disabled}>{option.label}</button>)}</div></div>}
+    <div className="upgrade-journey-heading"><span className="upgrade-heading-icon"><Icon name="phone" size={16} /></span><div><strong>{product ? 'Your phone match' : 'Phone upgrade journey'}</strong><small>{product ? 'Personalized to your preferences' : `Step ${state.stage === 'currentDevice' ? 1 : state.stage === 'priorities' ? 2 : state.stage === 'budget' ? 3 : 4} of 4 · ${state.stage === 'currentDevice' ? 'Current phone' : state.stage === 'priorities' ? 'What matters most' : state.stage === 'budget' ? 'Monthly budget' : 'Trade-in'}`}</small></div></div>
+    {!product && state.stage !== 'recommendation' && <div className="upgrade-quick-replies"><span>{deviceUpgradeQuestion(state.stage)}</span><div>{state.stage === 'tradeIn' && <><div className="troubleshooting-image-actions"><label className="troubleshooting-image-button">Take a photo<input type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" capture="environment" disabled={disabled || imageAnalyzing} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) onImage(file) }} /></label><label className="troubleshooting-image-button">Upload an image<input type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" disabled={disabled || imageAnalyzing} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) onImage(file) }} /></label></div><small>JPG, JPEG, PNG, or WEBP · Up to 5 MB. Visible condition only; final trade-in credit needs a full device check.</small>{imageAnalyzing && <small role="status">Checking your phone’s condition…</small>}</>}{options[state.stage].map((option) => <button key={option.label} onClick={() => onSelect(option.answer)} disabled={disabled || imageAnalyzing}>{option.label}</button>)}</div></div>}
     {product && <>
       <article className="upgrade-recommendation">
         <div className={`upgrade-product-art ${product.swatch}`}><div className="product-phone"><i /><b /><span /></div></div>
@@ -613,8 +687,37 @@ function DeviceUpgradePanel({ state, onSelect, onAdd, onBrowse, disabled }: { st
   </section>
 }
 
-function ImageAnalysisCard({ analysis }: { analysis: ImageAnalysis }) {
-  return <section className="image-analysis-card" aria-label="Modem image analysis"><strong>Visual troubleshooting</strong><dl><div><dt>Issue summary</dt><dd>{analysis.issueSummary}</dd></div><div><dt>Likely cause</dt><dd>{analysis.likelyRootCause}</dd></div><div><dt>Confidence</dt><dd>{analysis.confidence}%</dd></div><div><dt>Recommended next step</dt><dd>{analysis.recommendedAction}</dd></div></dl><small>Based only on what is visible in the image. Not a live network diagnostic.</small></section>
+function BillJourneyPanel({ state, onSelect, onImage, imageAnalyzing, disabled }: { state: BillJourneyState; onSelect: (answer: string) => void; onImage: (file: File) => void; imageAnalyzing: boolean; disabled: boolean }) {
+  const providerOptions = ['Bell', 'Telus', 'Freedom / Fido / Virgin', 'Another provider']
+  const serviceOptions = ['Mobile only', 'Home Internet only', 'Mobile + Internet', 'Mobile + Internet + TV']
+  const options = state.stage === 'provider' ? providerOptions : state.stage === 'services' ? serviceOptions : []
+  const imageActions = <div className="troubleshooting-image-actions">
+    <label className="troubleshooting-image-button">Take a photo<input type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" capture="environment" disabled={disabled || imageAnalyzing} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) onImage(file) }} /></label>
+    <label className="troubleshooting-image-button">Upload an image<input type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" disabled={disabled || imageAnalyzing} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) onImage(file) }} /></label>
+  </div>
+  return <section className="bill-journey-card" aria-label={state.kind === 'billing' ? 'Bill review journey' : 'Competitor bill comparison'}>
+    <strong>{state.kind === 'billing' ? 'Understand your bill' : 'Compare your bill with Rogers'}</strong>
+    <p className="bill-photo-prompt">Share a bill photo now{state.stage !== 'upload' ? ' (optional)' : ''}</p>
+    {imageActions}
+    <small>JPG, JPEG, PNG, or WEBP · Up to 5 MB. Cover account numbers, name, address, and payment details before sharing.</small>
+    {options.length > 0 && <><p className="bill-photo-prompt">Or choose an option:</p><div className="bill-journey-options">{options.map((option) => <button key={option} onClick={() => onSelect(option)} disabled={disabled}>{option}</button>)}</div></>}
+    {imageAnalyzing && <small role="status">Reviewing the bill image…</small>}
+  </section>
+}
+
+function BillComparisonCard({ comparison, services }: { comparison: NonNullable<AnnaMessage['billComparison']>; services: string[] }) {
+  const shownServices = services.length ? services.join(', ') : 'services selected in the journey'
+  return <div className="bill-comparison-card"><strong>Estimated monthly comparison</strong><p>{comparison.provider}: {comparison.currentMonthly === null ? 'Monthly recurring total not clearly visible' : `${comparison.currentMonthly.toFixed(2)}/mo.`}</p><p>Rogers estimate ({shownServices}): {comparison.rogersMonthly === null ? 'not enough service details to estimate' : `${comparison.rogersMonthly.toFixed(2)}/mo.`}</p><b>{comparison.annualSavings === null ? 'Annual savings unavailable until the bill total and services are confirmed.' : comparison.annualSavings > 0 ? `Estimated annual savings: ${comparison.annualSavings.toFixed(2)}` : `Rogers is estimated to cost ${Math.abs(comparison.annualSavings).toFixed(2)} more per year.`}</b><small>Illustrative estimate using reference Rogers rates ($65/mobile line, $60 Internet, $25 TV). Taxes, fees, discounts, equipment and eligibility can change actual pricing. Confirm current offers before switching.</small></div>
+}
+
+function TradeInCard({ analysis }: { analysis: ImageAnalysis }) {
+  const outlook = { 'worth-trading-in': 'Worth trading in', 'limited-value': 'May have limited value', 'not-recommended': 'Trade-in not recommended', 'need-better-photo': 'Need a clearer photo' }[analysis.tradeInOutlook ?? 'need-better-photo']
+  return <section className="image-analysis-card" aria-label="Trade-in phone assessment"><strong>Trade-in assessment</strong><dl><div><dt>Phone</dt><dd>{analysis.deviceDescription ?? 'Not identified'}</dd></div><div><dt>Visible condition</dt><dd>{analysis.condition ?? 'unclear'}</dd></div><div><dt>Outlook</dt><dd>{outlook}</dd></div><div><dt>Confidence</dt><dd>{analysis.confidence}%</dd></div></dl>{analysis.damageFindings && analysis.damageFindings.length > 0 && <div className="bill-suggestions"><strong>Visible findings</strong><ul>{analysis.damageFindings.map((finding) => <li key={finding}>{finding}</li>)}</ul></div>}<p>{analysis.recommendedAction}</p><small>Based only on the photo. Not a trade-in quote; battery, function and eligibility are confirmed in a full device check.</small></section>
+}
+
+function ImageAnalysisCard({ analysis, analysisType, comparison }: { analysis: ImageAnalysis; analysisType: ImageAnalysisType; comparison?: AnnaMessage['billComparison'] }) {
+  if (analysisType === 'tradeIn') return <TradeInCard analysis={analysis} />
+  return <section className="image-analysis-card" aria-label={analysisType === 'bill' ? 'Bill analysis' : 'Modem image analysis'}><strong>{analysisType === 'bill' ? 'Bill review' : 'Visual troubleshooting'}</strong><dl><div><dt>Issue summary</dt><dd>{analysis.issueSummary}</dd></div><div><dt>Likely cause</dt><dd>{analysis.likelyRootCause}</dd></div><div><dt>Confidence</dt><dd>{analysis.confidence}%</dd></div><div><dt>Recommended next step</dt><dd>{analysis.recommendedAction}</dd></div></dl>{analysisType === 'bill' && <>{analysis.charges && analysis.charges.length > 0 && <div className="bill-charges"><strong>Visible charges</strong>{analysis.charges.map((charge, index) => <div key={`${index}-${charge.label}`}><span>{charge.label}</span><b>${charge.amount.toFixed(2)}</b></div>)}</div>}{analysis.suggestions && analysis.suggestions.length > 0 && <div className="bill-suggestions"><strong>Possible next steps</strong><ul>{analysis.suggestions.map((suggestion) => <li key={suggestion}>{suggestion}</li>)}</ul></div>}</>}{comparison && <BillComparisonCard comparison={comparison} services={analysis.services ?? []} /> }<small>{analysisType === 'bill' ? 'Based only on readable bill content. Amounts and recommendations may be incomplete; verify with your provider.' : 'Based only on what is visible in the image. Not a live network diagnostic.'}</small></section>
 }
 
 function TroubleshootingExperience({ state, onSelect, onImage, imageAnalyzing, disabled }: { state: TroubleshootingState; onSelect: (answer: string) => void; onImage: (file: File) => void; imageAnalyzing: boolean; disabled: boolean }) {

@@ -1,6 +1,7 @@
 import { PhoneProduct, productCards } from './offers'
+import type { ImageAnalysis } from './image-analysis'
 
-export type DeviceUpgradeStage = 'currentDevice' | 'priorities' | 'budget' | 'recommendation'
+export type DeviceUpgradeStage = 'currentDevice' | 'priorities' | 'budget' | 'tradeIn' | 'recommendation'
 export type DeviceUpgradeBrand = PhoneProduct['line'] | 'Other'
 export type DeviceUpgradePriority = 'camera' | 'battery' | 'performance' | 'value'
 export type DeviceUpgradeBudget = 'under-30' | '30-to-50' | 'flexible'
@@ -12,6 +13,7 @@ export type DeviceUpgradeState = {
   priorities: DeviceUpgradePriority[]
   budget: DeviceUpgradeBudget | null
   recommendation: PhoneProduct | null
+  tradeIn: { status: 'none' | 'assessed'; analysis?: ImageAnalysis }
 }
 
 export function isDeviceUpgradeRequest(message: string): boolean {
@@ -26,6 +28,22 @@ export function beginDeviceUpgrade(): DeviceUpgradeState {
     priorities: [],
     budget: null,
     recommendation: null,
+    tradeIn: { status: 'none' },
+  }
+}
+
+export function completeTradeIn(state: DeviceUpgradeState, analysis?: ImageAnalysis): DeviceUpgradeState {
+  const recommendation = recommendDevice(state.preferredBrand, state.priorities, state.budget ?? 'flexible')
+  return { ...state, stage: 'recommendation', recommendation, tradeIn: analysis ? { status: 'assessed', analysis } : { status: 'none' } }
+}
+
+export function tradeInAssessmentReply(analysis: ImageAnalysis): string {
+  const device = analysis.deviceDescription ? `your ${analysis.deviceDescription}` : 'your phone'
+  switch (analysis.tradeInOutlook) {
+    case 'worth-trading-in': return `${device[0].toUpperCase()}${device.slice(1)} looks to be in good visible condition, so a trade-in is worth pursuing. Final credit depends on a full device check.`
+    case 'limited-value': return `${device[0].toUpperCase()}${device.slice(1)} shows some visible wear. A trade-in may still be worthwhile, but the credit could be reduced.`
+    case 'not-recommended': return `I can see significant damage on ${device}, so a trade-in may offer little or no credit. A repair or recycling may be worth comparing.`
+    default: return 'I couldn’t assess the phone clearly from that photo. Try a well-lit photo of the front and back, or continue without a trade-in.'
   }
 }
 
@@ -57,9 +75,9 @@ export function advanceDeviceUpgrade(state: DeviceUpgradeState, answer: string):
       : /\b(30|50|middle|moderate)\b/.test(normalized)
         ? '30-to-50'
         : 'flexible'
-    const recommendation = recommendDevice(state.preferredBrand, state.priorities, budget)
-    return { ...state, stage: 'recommendation', budget, recommendation }
+    return { ...state, stage: 'tradeIn', budget }
   }
+  if (state.stage === 'tradeIn') return completeTradeIn(state)
   return state
 }
 
@@ -85,6 +103,7 @@ export function deviceUpgradeQuestion(stage: DeviceUpgradeStage): string {
     case 'currentDevice': return 'Let’s find an upgrade that fits. What phone do you use now—iPhone, Samsung Galaxy, Google Pixel, or something else?'
     case 'priorities': return 'Thanks. What matters most in your next phone: camera, battery life, gaming and performance, or value?'
     case 'budget': return 'What monthly device budget feels comfortable: under $30, around $30–$50, or flexible for the right phone?'
+    case 'tradeIn': return 'Do you have a phone you’d like to trade in? Take a photo or upload one and I’ll check its visible condition to tell you whether a trade-in looks worthwhile.'
     case 'recommendation': return 'Based on what you shared, here’s a phone to consider.'
   }
 }

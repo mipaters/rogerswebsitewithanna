@@ -1,4 +1,4 @@
-export type DemoJourneyId = 'care' | 'offers' | 'roaming' | 'technical' | 'compare' | 'multimodal'
+export type DemoJourneyId = 'care' | 'offers' | 'roaming' | 'technical' | 'multimodal'
 
 export type DemoJourneyStep = {
   prompt: string
@@ -66,16 +66,7 @@ const journeys: Record<DemoJourneyId, DemoJourneyDefinition> = {
       ? `Glad it’s working again. We recorded ${answers[0]?.toLowerCase() ?? 'your service'} with the symptom “${answers[1]?.toLowerCase() ?? 'reported issue'}” and your successful restart step.`
       : `We recorded ${answers[0]?.toLowerCase() ?? 'your service'} with the symptom “${answers[1]?.toLowerCase() ?? 'reported issue'}.” Since the restart ${answers[2] === 'It improved, but still has issues' ? 'only partly helped' : 'did not help'}, next try checking cables and testing near the gateway. If it continues, contact Rogers Support for account and line diagnostics. This demo cannot test the live network.`,
   },
-  compare: {
-    title: 'Compare with Competitors',
-    opening: 'Let’s see how your current service compares with Rogers. I’ll ask a few questions, then estimate your savings.',
-    steps: [
-      { prompt: 'Who is your current provider?', options: ['Bell', 'Telus', 'Freedom / Fido / Virgin', 'Another provider'] },
-      { prompt: 'Which services do you have with them?', options: ['Mobile only', 'Home Internet only', 'Mobile + Internet', 'Mobile + Internet + TV'] },
-      { prompt: 'Roughly what do you pay each month for those services?', options: ['Under $75', '$75–$125', '$125–$200', 'Over $200'] },
-    ],
-    completion: (answers) => compareSummary(answers),
-  },  multimodal: {
+  multimodal: {
     title: 'Multimodal Care Experience',
     opening: 'Let’s preview how a future multimodal support session could work. For now, these are guided demo choices only.',
     steps: [
@@ -85,26 +76,6 @@ const journeys: Record<DemoJourneyId, DemoJourneyDefinition> = {
     ],
     completion: (answers) => `Demo scenario complete: you chose to share ${answers[0]?.toLowerCase() ?? 'a support detail'}, identify ${answers[1]?.toLowerCase() ?? 'the issue'}, and ${answers[2]?.toLowerCase() ?? 'continue support'}. Uploads, image/video analysis, voice and live sessions are future capabilities and are not enabled in this prototype.`,
   },
-}
-
-const spendMidpoint: Record<string, number> = { 'Under $75': 60, '$75–$125': 100, '$125–$200': 160, 'Over $200': 230 }
-const rogersOffers: Record<string, { name: string; price: number }> = {
-  'Mobile only': { name: 'Rogers 5G mobile plan with a new-line promotion', price: 55 },
-  'Home Internet only': { name: 'Rogers Ignite Internet with WiFi gateway', price: 70 },
-  'Mobile + Internet': { name: 'Rogers mobile + Ignite Internet bundle', price: 115 },
-  'Mobile + Internet + TV': { name: 'Rogers mobile + Ignite Internet + Ignite TV bundle', price: 160 },
-}
-
-function compareSummary(answers: string[]): string {
-  const provider = answers[0] ?? 'your provider'
-  const offer = rogersOffers[answers[1]] ?? rogersOffers['Mobile only']
-  const current = spendMidpoint[answers[2]] ?? 100
-  const monthly = current - offer.price
-  const comparison = `Competitive offer: ${offer.name}. ${provider}: about $${current}/mo vs Rogers: about $${offer.price}/mo.`
-  const result = monthly > 0
-    ? ` Estimated savings: about $${monthly}/mo, or roughly $${monthly * 12}/year.`
-    : ' Based on your estimate, Rogers would not be cheaper, so a specialist could look for loyalty or bundle value instead of a price saving.'
-  return `${comparison}${result} Figures are illustrative estimates based on your answers, not a quote; taxes, fees, device payments and promotions vary, and final pricing needs a verified bill.`
 }
 
 export function startDemoJourney(id: DemoJourneyId): DemoJourneyState {
