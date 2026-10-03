@@ -4,7 +4,8 @@ import { isRelevantToJourney } from './services/relevance'
 import { isSpeechAvailable, listenOnce, SpeechCancelledError, SpeechNoMatchError, speak, stopListening, stopSpeaking } from './services/speech'
 import { azureCapabilities } from './config/azure'
 import { analyzeImage, ImageAnalysis, ImageAnalysisType } from './services/image-analysis'
-import { answerBillJourney, beginBillJourney, BillJourneyKind, BillJourneyState, billJourneyPrompt, estimateRogersMonthly, detectBillJourneyKind, isBillImageShareRequest } from './services/bill-journey'
+import { answerBillJourney, beginBillJourney, BillJourneyKind, BillJourneyState, billJourneyPrompt, estimateRogers, BillPhone, detectBillJourneyKind, isBillImageShareRequest } from './services/bill-journey'
+import { devicePricingCapturedAt } from './services/device-pricing'
 import { additionalLinePrices, bankCards, catalog, featuredPromotions, homeSecurityOffer, mobilePlans, offerSnapshotDate, offers, productCards } from './services/offers'
 import { beginTroubleshooting, completeDiagnostics, isModemImageShareRequest, isTroubleshootingRequest, recordTroubleshootingResponse, TroubleshootingState, troubleshootingReply } from './services/troubleshooting'
 import { advanceDeviceUpgrade, beginDeviceUpgrade, completeTradeIn, describeDeviceMatch, deviceMonthlyPrice, deviceUpgradeQuestion, DeviceUpgradeStage, DeviceUpgradeState, isDeviceUpgradeRequest, tradeInAssessmentReply } from './services/device-upgrade'
@@ -59,7 +60,18 @@ const walkthroughs = [
   { id: 'multimodal', title: 'Multimodal Care', text: 'A glimpse at the future of connected support.', icon: 'play' as IconName, prompt: 'What kinds of support can you help with today, and what’s coming next?' },
 ]
 
-type AnnaMessage = ChatMessage & { imageDataUrl?: string; imageAnalysis?: ImageAnalysis; imageAnalysisType?: ImageAnalysisType; billComparison?: { provider: string; currentMonthly: number | null; rogersMonthly: number | null; annualSavings: number | null } }
+type BillComparison = { provider: string; currentMonthly: number | null; rogersMonthly: number | null; annualSavings: number | null; planLabel: string | null; planMonthly: number | null; deviceMonthly: number | null; deviceLabel: string | null; currentPhone: string | null; phoneAssumed: boolean }
+
+function buildBillComparison(journey: BillJourneyState, analysis: ImageAnalysis, phone: BillPhone | null): BillComparison {
+  const services = journey.services ?? (analysis.services?.join(' + ') || null)
+  const estimate = estimateRogers(services, analysis.lineCount ?? null, phone)
+  const currentMonthly = analysis.monthlyTotal ?? null
+  const rogersMonthly = estimate?.total ?? null
+  const annualSavings = currentMonthly !== null && rogersMonthly !== null ? Math.round((currentMonthly - rogersMonthly) * 12 * 100) / 100 : null
+  return { provider: journey.provider ?? analysis.provider ?? 'your current provider', currentMonthly, rogersMonthly, annualSavings, planLabel: estimate?.planLabel ?? null, planMonthly: estimate?.planMonthly ?? null, deviceMonthly: estimate?.deviceMonthly ?? null, deviceLabel: estimate?.deviceLabel ?? null, currentPhone: phone?.hasDevice ? phone.model : null, phoneAssumed: estimate?.closestMatch ?? false }
+}
+
+type AnnaMessage = ChatMessage & { imageDataUrl?: string; imageAnalysis?: ImageAnalysis; imageAnalysisType?: ImageAnalysisType; billComparison?: BillComparison }
 
 const initialMessages: AnnaMessage[] = [{
   role: 'assistant',
@@ -270,12 +282,17 @@ function App() {
         return
       }
       const services = billJourney?.services ?? (analysis.services?.join(' + ') || null)
-      const rogersMonthly = billJourney?.kind === 'compare' ? estimateRogersMonthly(services, analysis.lineCount ?? null) : null
-      const provider = billJourney?.provider ?? analysis.provider ?? 'your current provider'
-      const currentMonthly = analysis.monthlyTotal ?? null
-      const annualSavings = currentMonthly !== null && rogersMonthly !== null ? Math.round((currentMonthly - rogersMonthly) * 12 * 100) / 100 : null
-      const billComparison = billJourney?.kind === 'compare' ? { provider, currentMonthly, rogersMonthly, annualSavings } : undefined
+      const detectedPhone: BillPhone | null = analysis.includesDevicePayment === true ? { hasDevice: true, model: analysis.deviceModel ?? null } : analysis.includesDevicePayment === false ? { hasDevice: false, model: null } : null
+      const phone = billJourney?.phone ?? detectedPhone
+      const needsPhoneDetails = billJourney?.kind === 'compare' && /mobile/i.test(services ?? '') && phone === null
+      const billComparison = billJourney?.kind === 'compare' ? buildBillComparison(billJourney, analysis, phone) : undefined
       setMessages((current) => [...current, { role: 'assistant', content: analysis.issueSummary, imageAnalysis: analysis, imageAnalysisType: analysisType, billComparison }])
+      if (billJourney && needsPhoneDetails) {
+        const awaiting: BillJourneyState = { ...billJourney, services, analysis, stage: 'phone' }
+        setBillJourney(awaiting)
+        setMessages((current) => [...current, { role: 'assistant', content: billJourneyPrompt(awaiting) }])
+        return
+      }
       if (billJourney) setBillJourney(null)
     } catch (error) {
       setChatError(error instanceof Error ? error.message : 'Image analysis failed. Please try again.')
@@ -319,6 +336,12 @@ function App() {
       }
       if (billJourney && billJourney.stage !== 'upload') {
         const updated = answerBillJourney(billJourney, text)
+        if (updated.stage === 'upload' && updated.analysis) {
+          const comparison = buildBillComparison(updated, updated.analysis, updated.phone)
+          setBillJourney(null)
+          setMessages([...next, { role: 'assistant', content: 'Thanks—here’s the updated comparison with your phone included.', imageAnalysis: updated.analysis, imageAnalysisType: 'bill', billComparison: comparison }])
+          return
+        }
         setBillJourney(updated)
         setMessages([...next, { role: 'assistant', content: billJourneyPrompt(updated) }])
         return
@@ -690,15 +713,16 @@ function DeviceUpgradePanel({ state, onImage, imageAnalyzing, onSelect, onAdd, o
 function BillJourneyPanel({ state, onSelect, onImage, imageAnalyzing, disabled }: { state: BillJourneyState; onSelect: (answer: string) => void; onImage: (file: File) => void; imageAnalyzing: boolean; disabled: boolean }) {
   const providerOptions = ['Bell', 'Telus', 'Freedom / Fido / Virgin', 'Another provider']
   const serviceOptions = ['Mobile only', 'Home Internet only', 'Mobile + Internet', 'Mobile + Internet + TV']
-  const options = state.stage === 'provider' ? providerOptions : state.stage === 'services' ? serviceOptions : []
+  const phoneOptions = ['iPhone', 'Samsung Galaxy', 'Google Pixel', 'Another phone', 'SIM only / my own phone']
+  const options = state.stage === 'provider' ? providerOptions : state.stage === 'services' ? serviceOptions : state.stage === 'phone' ? phoneOptions : []
   const imageActions = <div className="troubleshooting-image-actions">
     <label className="troubleshooting-image-button">Take a photo<input type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" capture="environment" disabled={disabled || imageAnalyzing} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) onImage(file) }} /></label>
     <label className="troubleshooting-image-button">Upload an image<input type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" disabled={disabled || imageAnalyzing} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) onImage(file) }} /></label>
   </div>
   return <section className="bill-journey-card" aria-label={state.kind === 'billing' ? 'Bill review journey' : 'Competitor bill comparison'}>
     <strong>{state.kind === 'billing' ? 'Understand your bill' : 'Compare your bill with Rogers'}</strong>
-    <p className="bill-photo-prompt">Share a bill photo now{state.stage !== 'upload' ? ' (optional)' : ''}</p>
-    {imageActions}
+    <p className="bill-photo-prompt">{state.analysis ? 'Bill already received' : `Share a bill photo now${state.stage !== 'upload' ? ' (optional)' : ''}`}</p>
+    {!state.analysis && imageActions}
     <small>JPG, JPEG, PNG, or WEBP · Up to 5 MB. Cover account numbers, name, address, and payment details before sharing.</small>
     {options.length > 0 && <><p className="bill-photo-prompt">Or choose an option:</p><div className="bill-journey-options">{options.map((option) => <button key={option} onClick={() => onSelect(option)} disabled={disabled}>{option}</button>)}</div></>}
     {imageAnalyzing && <small role="status">Reviewing the bill image…</small>}
@@ -707,7 +731,9 @@ function BillJourneyPanel({ state, onSelect, onImage, imageAnalyzing, disabled }
 
 function BillComparisonCard({ comparison, services }: { comparison: NonNullable<AnnaMessage['billComparison']>; services: string[] }) {
   const shownServices = services.length ? services.join(', ') : 'services selected in the journey'
-  return <div className="bill-comparison-card"><strong>Estimated monthly comparison</strong><p>{comparison.provider}: {comparison.currentMonthly === null ? 'Monthly recurring total not clearly visible' : `${comparison.currentMonthly.toFixed(2)}/mo.`}</p><p>Rogers estimate ({shownServices}): {comparison.rogersMonthly === null ? 'not enough service details to estimate' : `${comparison.rogersMonthly.toFixed(2)}/mo.`}</p><b>{comparison.annualSavings === null ? 'Annual savings unavailable until the bill total and services are confirmed.' : comparison.annualSavings > 0 ? `Estimated annual savings: ${comparison.annualSavings.toFixed(2)}` : `Rogers is estimated to cost ${Math.abs(comparison.annualSavings).toFixed(2)} more per year.`}</b><small>Illustrative estimate using reference Rogers rates ($65/mobile line, $60 Internet, $25 TV). Taxes, fees, discounts, equipment and eligibility can change actual pricing. Confirm current offers before switching.</small></div>
+  const money = (value: number) => `$${value.toFixed(2)}`
+  const rogersLine = comparison.rogersMonthly === null ? 'not enough service details to estimate' : `${money(comparison.rogersMonthly)}/mo.`
+  return <div className="bill-comparison-card"><strong>Estimated monthly comparison</strong><p>{comparison.provider}{comparison.currentPhone ? ` (with ${comparison.currentPhone})` : ''}: {comparison.currentMonthly === null ? 'Monthly recurring total not clearly visible' : `${money(comparison.currentMonthly)}/mo.`}</p><p>Rogers estimate ({shownServices}): {rogersLine}</p>{comparison.planLabel && comparison.planMonthly !== null && <p className="bill-comparison-breakdown">{comparison.planLabel}{comparison.deviceMonthly !== null && comparison.deviceLabel ? ` + ${comparison.deviceLabel} financing${comparison.phoneAssumed ? ' (closest current model — I couldn’t match your exact phone)' : ''}` : ''}: {money(comparison.planMonthly)}{comparison.deviceMonthly !== null ? ` + ${money(comparison.deviceMonthly)}` : ''}</p>}<b>{comparison.annualSavings === null ? 'Annual savings unavailable until the bill total and services are confirmed.' : comparison.annualSavings > 0 ? `Estimated annual savings: ${money(comparison.annualSavings)}` : `Rogers is estimated to cost ${money(Math.abs(comparison.annualSavings))} more per year.`}</b><small>{`Illustrative estimate using reference Rogers rates (monthly plan prices, Internet $60, TV $25) and device financing from the Rogers phone pricing captured ${devicePricingCapturedAt}. Your phone model, taxes, fees, discounts, trade-in and eligibility can change actual pricing. Confirm current offers before switching.`}</small></div>
 }
 
 function TradeInCard({ analysis }: { analysis: ImageAnalysis }) {
@@ -1240,7 +1266,7 @@ function DevicesPage({ onAdd }: { onAdd: (label: string, monthlyPrice?: number |
   const visiblePhones = productCards.filter((product) => (filter === 'All phones' || product.line === filter) && `${product.line} ${product.name}`.toLowerCase().includes(query.toLowerCase()))
   return <>
     <section className="devices-hero"><div className="page-width devices-hero-inner"><div><span className="eyebrow">DEVICES, YOUR WAY</span><h1>Find the phone<br />that feels <em>like you.</em></h1><p>Explore the latest phones, flexible payment options and offers to make your next upgrade feel even better.</p><button className="button-primary" onClick={() => document.getElementById('phone-catalog')?.scrollIntoView({ behavior: 'smooth' })}>Shop phones <Icon name="arrow" size={16} /></button></div><div className="device-hero-art" aria-hidden="true"><div className="device-blob" /><div className="device-hero-phone phone-back"><span /></div><div className="device-hero-phone phone-front"><i /><span>16:09</span><b /></div><span className="device-star">✦</span></div></div></section>
-    <section className="section-block page-width device-catalog" id="phone-catalog"><div className="section-heading"><div><span className="eyebrow eyebrow-red">THE LATEST & GREATEST</span><h2>Let’s find your next phone.</h2><p>Great devices. Flexible ways to make them yours.</p></div><span className="pricing-note">Flexible financing options</span></div><div className="phone-catalog-tools"><div className="device-filters" role="group" aria-label="Filter phones by brand">{['All phones', 'Apple', 'Samsung', 'Google'].map((option) => <button className={filter === option ? 'filter-active' : ''} aria-pressed={filter === option} onClick={() => setFilter(option)} key={option}>{option}</button>)}</div><label className="phone-search"><Icon name="search" size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search phones" aria-label="Search phones" /></label></div><div className="product-grid">{visiblePhones.map((product) => <article className="product-card" key={product.name}><span className="product-badge">{product.badge ?? 'Explore'} </span><div className={`product-art ${product.swatch}`} aria-hidden="true"><div className="product-phone"><i /><b /><span /></div></div><div className="product-info"><span>{product.line}</span><h3>{product.name}</h3>{product.monthlyPrice ? <><strong>{product.monthlyPrice}</strong><small>{product.priceNote}</small>{product.details?.map((detail) => <small className="phone-detail" key={detail}>{detail}</small>)}</> : <><strong className="phone-price-prompt">See pricing options</strong><small>Financing and trade-in offers may be available.</small></>}<button className="button-outline" onClick={() => onAdd(product.name, deviceMonthlyPrice(product))}>Choose device <Icon name="arrow" size={15} /></button></div></article>)}</div>{visiblePhones.length === 0 && <p className="phone-empty-state">No phones match “{query}”. Try another search or choose a different brand.</p>}<p className="legal-copy">Device offer shown is a reference snapshot from {offerSnapshotDate}, not a live Rogers feed. Prices and offers vary by plan, storage, trade-in and eligibility. Taxes extra; terms apply.</p></section>
+    <section className="section-block page-width device-catalog" id="phone-catalog"><div className="section-heading"><div><span className="eyebrow eyebrow-red">THE LATEST & GREATEST</span><h2>Let’s find your next phone.</h2><p>Great devices. Flexible ways to make them yours.</p></div><span className="pricing-note">Flexible financing options</span></div><div className="phone-catalog-tools"><div className="device-filters" role="group" aria-label="Filter phones by brand">{['All phones', 'Apple', 'Samsung', 'Google'].map((option) => <button className={filter === option ? 'filter-active' : ''} aria-pressed={filter === option} onClick={() => setFilter(option)} key={option}>{option}</button>)}</div><label className="phone-search"><Icon name="search" size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search phones" aria-label="Search phones" /></label></div><div className="product-grid">{visiblePhones.map((product) => <article className="product-card" key={product.name}><span className="product-badge">{product.badge ?? 'Explore'} </span><div className={`product-art ${product.swatch}`} aria-hidden="true"><div className="product-phone"><i /><b /><span /></div></div><div className="product-info"><span>{product.line}</span><h3>{product.name}</h3>{product.monthlyPrice ? <><strong>{product.monthlyPrice}</strong><small>{product.priceNote}</small>{product.details?.map((detail) => <small className="phone-detail" key={detail}>{detail}</small>)}</> : <><strong className="phone-price-prompt">See pricing options</strong><small>Financing and trade-in offers may be available.</small></>}<button className="button-outline" onClick={() => onAdd(product.name, deviceMonthlyPrice(product))}>Choose device <Icon name="arrow" size={15} /></button></div></article>)}</div>{visiblePhones.length === 0 && <p className="phone-empty-state">No phones match “{query}”. Try another search or choose a different brand.</p>}<p className="legal-copy">Device pricing is a snapshot of rogers.com/phones captured {devicePricingCapturedAt}, not a live Rogers feed. Prices and offers vary by plan, storage, trade-in and eligibility. Taxes extra; terms apply.</p></section>
     <section className="trade-section"><div className="page-width trade-inner"><span className="trade-icon"><Icon name="phone" size={25} /></span><div><span className="eyebrow eyebrow-red">A GOOD PHONE CAN GO FURTHER</span><h2>Trade in. Get more back.</h2><p>Your current phone may be worth more than you think. Get an estimate and put it toward something new.</p></div><button className="button-primary" onClick={() => onAdd('Phone upgrade & trade-in')}>Explore trade-in <Icon name="arrow" size={16} /></button></div></section>
   </>
 }

@@ -1,24 +1,38 @@
+import type { ImageAnalysis } from './image-analysis'
+import { mobilePlans } from './offers'
+import { findDevicePrice, newPhones, type RogersDevicePrice } from './device-pricing'
+
 export type BillJourneyKind = 'billing' | 'compare'
-export type BillJourneyStage = 'provider' | 'services' | 'upload'
+export type BillJourneyStage = 'provider' | 'services' | 'phone' | 'upload'
+export type BillPhone = { hasDevice: boolean; model: string | null }
 export type BillJourneyState = {
   kind: BillJourneyKind
   stage: BillJourneyStage
   provider: string | null
   services: string | null
+  phone: BillPhone | null
+  analysis: ImageAnalysis | null
 }
 
 export function beginBillJourney(kind: BillJourneyKind): BillJourneyState {
-  return { kind, stage: kind === 'compare' ? 'provider' : 'upload', provider: null, services: null }
+  return { kind, stage: kind === 'compare' ? 'provider' : 'upload', provider: null, services: null, phone: null, analysis: null }
 }
 
 export function answerBillJourney(state: BillJourneyState, answer: string): BillJourneyState {
   if (state.stage === 'provider') return { ...state, provider: answer, stage: 'services' }
-  if (state.stage === 'services') return { ...state, services: answer, stage: 'upload' }
+  if (state.stage === 'services') return { ...state, services: answer, stage: /mobile/i.test(answer) ? 'phone' : 'upload' }
+  if (state.stage === 'phone') return { ...state, phone: parsePhoneAnswer(answer), stage: 'upload' }
   return state
+}
+
+export function parsePhoneAnswer(answer: string): BillPhone {
+  const noDevice = /\b(no phone|sim.?only|byod|bring my own|own my phone|paid off|no device|no payment|no financing|just (?:the )?(?:plan|service)|service only|don'?t have a (?:phone )?payment)\b/i.test(answer)
+  return noDevice ? { hasDevice: false, model: null } : { hasDevice: true, model: answer.trim().slice(0, 80) }
 }
 
 export function billJourneyPrompt(state: BillJourneyState): string {
   if (state.stage === 'provider') return 'Which provider’s bill would you like to compare with Rogers? You can choose below, or share a photo now and I’ll identify the provider and services if they’re visible. Would you like to share it?'
+  if (state.stage === 'phone') return 'Does that bill include a phone payment? Tell me which phone (for example “iPhone 15” or “Galaxy S24”) so I can compare a Rogers plan with a phone, or choose SIM only if you’re bringing your own.'
   if (state.stage === 'services') return 'Which services are on that bill? You can choose below, or share a photo now and I’ll identify the services if they’re visible. Would you like to share it?'
   return state.kind === 'billing'
     ? 'Would you like to share a photo of your bill so I can explain the visible charges and suggest possible ways to save? Choose Take a photo or Upload an image below. You can cover account numbers, your name, address, and payment details first.'
@@ -50,13 +64,48 @@ export function isBillImageShareRequest(text: string, recentContext: string): bo
   return mentionsBill && asksToShareImage || asksToShareImage && detectBillJourneyKind(recentContext) !== null
 }
 
-export function estimateRogersMonthly(services: string | null, lines: number | null): number | null {
+export type RogersEstimate = { total: number; planLabel: string | null; planMonthly: number; deviceMonthly: number | null; deviceLabel: string | null; closestMatch: boolean }
+
+const planById = (id: string) => mobilePlans.find((plan) => plan.id === id) ?? mobilePlans[0]
+const brandOf = (model: string) => /iphone|apple/i.test(model) ? 'Apple' : /galaxy|samsung/i.test(model) ? 'Samsung' : /pixel|google/i.test(model) ? 'Google' : null
+
+function pickRogersDevice(model: string | null): { device: RogersDevicePrice; closestMatch: boolean } | null {
+  const exact = model ? findDevicePrice(model) : null
+  if (exact) return { device: exact, closestMatch: false }
+  const brand = model ? brandOf(model) : null
+  const pool = newPhones().filter((device) => brand ? device.brand === brand : ['Apple', 'Samsung', 'Google'].includes(device.brand)).sort((a, b) => a.monthlyAfterCredit - b.monthlyAfterCredit)
+  const fallback = pool[Math.floor(pool.length / 2)] ?? newPhones().sort((a, b) => a.monthlyAfterCredit - b.monthlyAfterCredit)[0]
+  return fallback ? { device: fallback, closestMatch: true } : null
+}
+
+export function estimateRogers(services: string | null, lines: number | null, phone: BillPhone | null): RogersEstimate | null {
   if (!services) return null
   const normalized = services.toLowerCase()
-  let total = 0
-  if (normalized.includes('mobile')) total += (lines ?? 1) * 65
-  if (normalized.includes('internet')) total += 60
-  if (normalized.includes('tv')) total += 25
-  if (normalized.includes('home phone')) total += 10
-  return total || null
+  let planMonthly = 0
+  let planLabel: string | null = null
+  let deviceMonthly: number | null = null
+  let deviceLabel: string | null = null
+  let closestMatch = false
+  if (normalized.includes('mobile')) {
+    const lineCount = lines ?? 1
+    const picked = phone?.hasDevice ? pickRogersDevice(phone.model) : null
+    // Device bill credits are tied to a Popular plan; other devices work on Lite.
+    const plan = planById(picked && picked.device.billCreditMonthly > 0 ? 'popular' : 'lite')
+    planMonthly += normalized.includes('internet') ? lineCount * plan.bundlePrice : lineCount * plan.mobileOnlyPrice
+    planLabel = plan.name
+    if (picked) {
+      deviceMonthly = picked.device.monthlyAfterCredit
+      deviceLabel = picked.device.condition === 'Preowned' ? `${picked.device.name} (preowned)` : picked.device.name
+      closestMatch = picked.closestMatch
+    }
+  }
+  if (normalized.includes('internet')) planMonthly += 60
+  if (normalized.includes('tv')) planMonthly += 25
+  if (normalized.includes('home phone')) planMonthly += 10
+  const total = planMonthly + (deviceMonthly ?? 0)
+  return total ? { total: Math.round(total * 100) / 100, planLabel, planMonthly, deviceMonthly, deviceLabel, closestMatch } : null
+}
+
+export function estimateRogersMonthly(services: string | null, lines: number | null): number | null {
+  return estimateRogers(services, lines, null)?.total ?? null
 }
