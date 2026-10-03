@@ -5,13 +5,14 @@ import { isSpeechAvailable, listenOnce, SpeechCancelledError, SpeechNoMatchError
 import { azureCapabilities } from './config/azure'
 import { analyzeImage, ImageAnalysis, ImageAnalysisType } from './services/image-analysis'
 import { answerBillJourney, beginBillJourney, BillJourneyKind, BillJourneyState, billJourneyPrompt, estimateRogers, BillPhone, detectBillJourneyKind, isBillImageShareRequest } from './services/bill-journey'
+import { ArchitecturePage } from './ArchitecturePage'
 import { devicePricingCapturedAt } from './services/device-pricing'
 import { additionalLinePrices, bankCards, catalog, featuredPromotions, homeSecurityOffer, mobilePlans, offerSnapshotDate, offers, productCards } from './services/offers'
 import { beginTroubleshooting, completeDiagnostics, isModemImageShareRequest, isTroubleshootingRequest, recordTroubleshootingResponse, TroubleshootingState, troubleshootingReply } from './services/troubleshooting'
 import { advanceDeviceUpgrade, beginDeviceUpgrade, completeTradeIn, describeDeviceMatch, deviceMonthlyPrice, deviceUpgradeQuestion, DeviceUpgradeStage, DeviceUpgradeState, isDeviceUpgradeRequest, tradeInAssessmentReply } from './services/device-upgrade'
-import { answerDemoJourney, currentDemoJourneyStep, demoJourneyOpening, DemoJourneyId, DemoJourneyState, startDemoJourney } from './services/demo-journeys'
+import { answerDemoJourney, currentDemoJourneyStep, demoJourneyOpening, demoJourneyReprompt, isDemoAnswerAcceptable, DemoJourneyId, DemoJourneyState, startDemoJourney } from './services/demo-journeys'
 
-type Page = 'home' | 'mobile' | 'internet' | 'tv' | 'smartHome' | 'homePhone' | 'devices' | 'support' | 'account' | 'cart' | 'checkout' | 'bank' | 'about'
+type Page = 'home' | 'mobile' | 'internet' | 'tv' | 'smartHome' | 'homePhone' | 'devices' | 'support' | 'account' | 'cart' | 'checkout' | 'bank' | 'about' | 'architecture'
 type IconName = 'search' | 'person' | 'cart' | 'chevron' | 'arrow' | 'close' | 'menu' | 'spark' | 'send' | 'reset' | 'wifi' | 'phone' | 'home' | 'play' | 'shield' | 'globe' | 'check' | 'mic' | 'speaker'
 
 function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
@@ -57,7 +58,6 @@ const walkthroughs = [
   { id: 'roaming', title: 'Roaming Advisor', text: 'Travel with more confidence and fewer surprises.', icon: 'globe' as IconName, prompt: 'I’m travelling soon. How does roaming work?' },
   { id: 'technical', title: 'Technical Support', text: 'Troubleshoot home WiFi, one step at a time.', icon: 'wifi' as IconName, prompt: 'My home internet has been slow. Can you help?' },
   { id: 'compare', title: 'Compare with Competitors', text: 'See your estimated annual savings with Rogers.', icon: 'shield' as IconName, prompt: 'Compare my current provider with Rogers.' },
-  { id: 'multimodal', title: 'Multimodal Care', text: 'A glimpse at the future of connected support.', icon: 'play' as IconName, prompt: 'What kinds of support can you help with today, and what’s coming next?' },
 ]
 
 type BillComparison = { provider: string; currentMonthly: number | null; rogersMonthly: number | null; annualSavings: number | null; planLabel: string | null; planMonthly: number | null; deviceMonthly: number | null; deviceLabel: string | null; currentPhone: string | null; phoneAssumed: boolean }
@@ -395,7 +395,13 @@ function App() {
         setMessages([...next, { role: 'assistant', content: reply }])
         setSending(false)
         return
-      }      if (executiveJourney && !executiveJourney.complete) {
+      }
+      if (executiveJourney && !executiveJourney.complete) {
+        if (!isDemoAnswerAcceptable(executiveJourney, text)) {
+          setMessages([...next, { role: 'assistant', content: demoJourneyReprompt(executiveJourney) }])
+          setSending(false)
+          return
+        }
         const updated = answerDemoJourney(executiveJourney, text)
         setExecutiveJourney(updated)
         const step = currentDemoJourneyStep(updated)
@@ -602,6 +608,7 @@ function App() {
               <button className="header-link search-trigger" onClick={() => setSearchOpen(!searchOpen)} aria-label="Search"><Icon name="search" /><span>Search</span></button>
               <button className="header-link" onClick={() => navigate('account')} aria-label={signedIn ? 'MyRogers account' : 'Sign in'}><Icon name="person" /><span>{signedIn ? 'MyRogers' : 'Sign in'}</span></button>
               <button className="header-link cart-trigger" onClick={() => navigate('cart')} aria-label={`Shopping cart, ${cartCount} items`}><Icon name="cart" /><span>Cart</span>{cartCount > 0 && <b className="cart-count">{cartCount}</b>}</button>
+              <button className={`header-link architecture-trigger ${page === 'architecture' ? 'nav-active' : ''}`} onClick={() => navigate('architecture')} aria-label="View solution architecture"><Icon name="shield" /><span>Architecture</span></button>
               <button className="demo-button" onClick={() => setDemoOpen(true)}><Icon name="spark" size={16} /><span>Executive Demo</span></button>
             </div>
           </div>
@@ -617,6 +624,7 @@ function App() {
         {page === 'smartHome' && <HomeSecurityPage onAdd={addToCart} onChat={() => setAnnaOpen(true)} />}
         {page === 'homePhone' && <CategoryPage category="homePhone" onAdd={addToCart} onChat={() => setAnnaOpen(true)} />}
         {page === 'devices' && <DevicesPage onAdd={addToCart} />}
+        {page === 'architecture' && <ArchitecturePage onChat={() => setAnnaOpen(true)} />}
         {page === 'bank' && <RogersBankPage />}
         {page === 'about' && <AboutRogersPage onNavigate={navigate} />}
         {page === 'support' && <SupportPage onNavigate={navigate} onChat={() => setAnnaOpen(true)} />}

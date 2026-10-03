@@ -3,6 +3,7 @@ export type DemoJourneyId = 'care' | 'offers' | 'roaming' | 'technical' | 'multi
 export type DemoJourneyStep = {
   prompt: string
   options: string[]
+  accepts?: RegExp
 }
 
 export type DemoJourneyDefinition = {
@@ -46,9 +47,9 @@ const journeys: Record<DemoJourneyId, DemoJourneyDefinition> = {
     title: 'Roaming Advisor',
     opening: 'Let’s get your trip details so I can help you plan for roaming.',
     steps: [
-      { prompt: 'Where are you travelling?', options: ['United States', 'Mexico', 'International', 'I’m staying in Canada'] },
-      { prompt: 'How long will you be away?', options: ['A day or two', 'About a week', 'Two weeks or more', 'Not sure yet'] },
-      { prompt: 'How do you expect to use your phone?', options: ['Calls and messages', 'Maps and browsing', 'Lots of data and streaming', 'Mostly WiFi'] },
+      { prompt: 'Where are you travelling?', options: ['United States', 'Mexico', 'International', 'I’m staying in Canada'], accepts: /[a-z]{3,}/i },
+      { prompt: 'How long will you be away?', options: ['A day or two', 'About a week', 'Two weeks or more', 'Not sure yet'], accepts: /\b(day|days|night|nights|weekend|week|weeks|month|months|year|couple|few|\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|not sure|unsure|don'?t know|dont know|long|short|while)\b/i },
+      { prompt: 'How do you expect to use your phone?', options: ['Calls and messages', 'Maps and browsing', 'Lots of data and streaming', 'Mostly WiFi'], accepts: /\b(calls?|calling|text|texts|texting|messages?|messaging|maps?|navigation|browsing|browse|web|data|stream|streaming|video|videos|wifi|wi-fi|email|emails|social|music|photos?|work|internet|everything|mostly|not sure|unsure|don'?t know|dont know)\b/i },
     ],
     completion: (answers) => answers[0] === 'I’m staying in Canada'
       ? 'Since you’re staying in Canada, roaming likely won’t be needed for this trip. Check your plan details for any applicable use outside your local coverage.'
@@ -99,4 +100,19 @@ export function answerDemoJourney(state: DemoJourneyState, answer: string): Demo
     return { ...state, stage, answers, complete: true, completionMessage: definition.completion(answers) }
   }
   return { ...state, stage, answers }
+}
+
+const fillerOnly = /^\s*(?:(?:um+|uh+|hmm+|mm+|ah+|oh+|er+|huh)[\s.,!?]*)+$/i
+
+export function isDemoAnswerAcceptable(state: DemoJourneyState, answer: string): boolean {
+  const step = currentDemoJourneyStep(state)
+  if (!step) return true
+  const text = answer.trim()
+  if (!text || fillerOnly.test(text)) return false
+  if (step.options.some((option) => option.toLowerCase() === text.toLowerCase())) return true
+  return step.accepts ? step.accepts.test(text) : true
+}
+
+export function demoJourneyReprompt(state: DemoJourneyState): string {
+  return `I didn’t catch that. ${currentDemoJourneyStep(state)?.prompt ?? 'Could you say that again?'}`
 }
