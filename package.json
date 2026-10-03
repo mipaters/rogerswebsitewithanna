@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:swa": "npx @azure/static-web-apps-cli start http://localhost:5175 --run \"vite --port 5175\" --api-location api",
     "build": "tsc -b && vite build",
     "preview": "vite preview"
   },

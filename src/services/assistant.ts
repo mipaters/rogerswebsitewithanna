@@ -130,24 +130,24 @@ export async function sendMessage(
     }
   }
 
+  const reply = await askGpt(messages, profile)
+  return { reply, profile, journeyStarted: false, completedQuestions, currentStage }
+}
+
+export async function askGpt(messages: ChatMessage[], profile: CustomerProfile): Promise<string> {
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ messages, profile }),
   })
   if (response.status === 404 || !response.headers.get('content-type')?.includes('application/json')) {
-    return {
-      reply: demoReply(latestUserMessage, messages),
-      profile,
-      journeyStarted: false,
-      completedQuestions,
-      currentStage,
-    }
+    console.warn('[Anna Debug] /api/chat unavailable', { status: response.status, contentType: response.headers.get('content-type') })
+    throw new Error('Anna’s service is not reachable right now. Please try again shortly.')
   }
   const data: { reply?: string; error?: string } = await response.json()
   if (!response.ok) throw new Error(data.error || 'Anna could not reply just now.')
   if (!data.reply) throw new Error('Anna sent an empty reply. Please try again.')
-  return { reply: data.reply, profile, journeyStarted: false, completedQuestions, currentStage }
+  return data.reply
 }
 
 function correctedStage(message: string): JourneyStage | null {
@@ -399,40 +399,4 @@ function recommendPlan(profile: CustomerProfile): PlanRecommendation {
     bundleName,
     budgetPreference: profile.budgetPreference,
   }
-}
-
-function demoReply(message: string, history: ChatMessage[]): string {
-  const text = message.toLowerCase()
-  const recentContext = history.slice(-8).map((item) => item.content.toLowerCase()).join(' ')
-  if (/\b(roam|travel|international|abroad|europe)\b/.test(text)) {
-    return 'Rogers Roam Like Home can let you use your plan’s talk, text and data while travelling in eligible destinations for a daily fee. Where are you headed, and for how long?'
-  }
-  if (/\b(bill|charge|payment|invoice)\b/.test(text)) {
-    return 'I can help you understand your bill. MyRogers shows monthly services, one-time charges and payments. Are you looking at a particular charge or trying to make a payment?'
-  }
-  if (/\b(tv|stream|channel)\b/.test(text) && /\b(sign up|subscribe|new service|looking for|interested|shopping|order)\b/.test(text)) {
-    return 'I can help you find the right Rogers TV setup. What do you most want to watch—sports, news, movies or family shows?'
-  }
-  if (/\b(internet)\b/.test(text) && /\b(sign up|subscribe|new service|looking for|interested|shopping|order)\b/.test(text)) {
-    return 'I can help you find a Rogers Internet plan. What matters most at home: fast speeds for many devices, a lower monthly price, or a little of both?'
-  }
-  if (/\b(internet|wifi|wi-fi|slow|connection|router)\b/.test(text)) {
-    return 'Let’s get your connection back on track. Check that your modem’s power and online lights are on, then unplug it for 30 seconds and reconnect it. Is the issue affecting all your devices or just one?'
-  }
-  if (/\b(phone|iphone|device|upgrade)\b/.test(text)) {
-    return 'Ready for a new phone? I can help narrow it down. What matters most to you: camera, battery life, screen size or a lower monthly payment?'
-  }
-  if (/\b(plan|data|mobile|recommend)\b/.test(text) || /\b(plan|mobile|wireless)\b/.test(recentContext)) {
-    return 'I can help you compare the 5G+ plan options. What matters most to you: a lower price, travel coverage, or more high-speed data?'
-  }
-  if (/\b(tv|stream|channel)\b/.test(text)) {
-    return 'With Rogers TV, you can bring live channels and streaming apps together. What do you like to watch most—sports, news, movies or family shows?'
-  }
-  if (/\b(troubleshoot|service issue|not working|problem)\b/.test(text)) {
-    return 'I can help troubleshoot. Which service is giving you trouble—mobile, Internet, TV or home security?'
-  }
-  if (/\b(smart home|security|camera|home phone)\b/.test(text)) {
-    return 'I can help with home services, from connected home security to reliable home phone. Tell me what you want to set up and I’ll suggest a good place to start.'
-  }
-  return 'I’m here to help with plans, devices, roaming, billing, internet troubleshooting and home services. What would you like to figure out today?'
 }
