@@ -140,11 +140,11 @@ export async function askGpt(messages: ChatMessage[], profile: CustomerProfile):
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ messages, profile }),
   })
-  if (response.status === 404 || !response.headers.get('content-type')?.includes('application/json')) {
-    console.warn('[Anna Debug] /api/chat unavailable', { status: response.status, contentType: response.headers.get('content-type') })
+  const data: { reply?: string; error?: string } | null = response.status === 404 ? null : await response.json().catch(() => null)
+  if (!data) {
+    console.warn('[Anna Debug] /api/chat unavailable or not JSON', { status: response.status, contentType: response.headers.get('content-type') })
     throw new Error('Anna’s service is not reachable right now. Please try again shortly.')
   }
-  const data: { reply?: string; error?: string } = await response.json()
   if (!response.ok) throw new Error(data.error || 'Anna could not reply just now.')
   if (!data.reply) throw new Error('Anna sent an empty reply. Please try again.')
   return data.reply
