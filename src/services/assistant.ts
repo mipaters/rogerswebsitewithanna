@@ -143,7 +143,7 @@ export async function askGpt(messages: ChatMessage[], profile: CustomerProfile):
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages, profile }),
+    body: JSON.stringify({ messages: messages.map(({ role, content }) => ({ role, content })), profile }),
   })
   const data: { reply?: string; error?: string } | null = response.status === 404 ? null : await response.json().catch(() => null)
   if (!data) {
