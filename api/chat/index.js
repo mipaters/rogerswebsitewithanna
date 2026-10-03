@@ -6,15 +6,17 @@ smart home, home phone, promotions, troubleshooting, and account support. Be con
 clear. Never claim to access private account details or perform an account action. Ask a focused
 follow-up when needed. If a problem needs account verification or a human agent, say so plainly.`
 
+const jsonHeaders = { 'Content-Type': 'application/json' }
+
 module.exports = async function (context, req) {
   const messages = req.body && req.body.messages
   const profile = req.body && req.body.profile
   if (!Array.isArray(messages) || messages.length === 0 || messages.length > 30) {
-    context.res = { status: 400, body: { error: 'Send between 1 and 30 chat messages.' } }
+    context.res = { headers: jsonHeaders, status: 400, body: { error: 'Send between 1 and 30 chat messages.' } }
     return
   }
   if (!messages.every((message) => message && ['user', 'assistant'].includes(message.role) && typeof message.content === 'string')) {
-    context.res = { status: 400, body: { error: 'Each chat message must include a valid role and text content.' } }
+    context.res = { headers: jsonHeaders, status: 400, body: { error: 'Each chat message must include a valid role and text content.' } }
     return
   }
 
@@ -24,6 +26,7 @@ module.exports = async function (context, req) {
   if (!config.azureOpenAIEndpoint || !config.azureOpenAIAPIKey) {
     console.log('[Anna Debug] Using demoReply fallback: true (endpoint or key missing)')
     context.res = {
+      headers: jsonHeaders,
       status: 200,
       body: { reply: demoReply(String(messages[messages.length - 1].content || '')) },
     }
@@ -61,14 +64,14 @@ module.exports = async function (context, req) {
       const azureError = await response.text()
       console.log('[Anna Debug] Azure error body:', azureError)
       context.log.error(`Azure OpenAI request failed (${response.status}).`)
-      context.res = { status: 502, body: { error: 'Anna is temporarily unavailable. Please try again.', debug: { azureStatus: response.status, azureBody: azureError } } }
+      context.res = { headers: jsonHeaders, status: 502, body: { error: 'Anna is temporarily unavailable. Please try again.', debug: { azureStatus: response.status, azureBody: azureError } } }
       return
     }
     const data = await response.json()
-    context.res = { status: 200, body: { reply: data.choices?.[0]?.message?.content || '' } }
+    context.res = { headers: jsonHeaders, status: 200, body: { reply: data.choices?.[0]?.message?.content || '' } }
   } catch (error) {
     context.log.error('Azure OpenAI request failed.', error)
-    context.res = { status: 502, body: { error: 'Anna is temporarily unavailable. Please try again.' } }
+    context.res = { headers: jsonHeaders, status: 502, body: { error: 'Anna is temporarily unavailable. Please try again.' } }
   }
 }
 
