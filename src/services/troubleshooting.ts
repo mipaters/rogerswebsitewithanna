@@ -135,6 +135,11 @@ export function recordTroubleshootingResponse(state: TroubleshootingState, respo
     customerResponses: [...state.customerResponses, response],
   }
   if (state.stage === 'identify') {
+    if (customerConfirmsResolved(response)) {
+      updated.stage = 'resolved'
+      updated.resolutionSummary = `You reported that the issue was resolved after: ${response}`
+      return updated
+    }
     const issue = state.issueType ?? identifyFromAnswer(response)
     if (!issue) return updated
     return {
@@ -197,11 +202,17 @@ export function troubleshootingReply(state: TroubleshootingState, response?: str
     return 'We’ve worked through the recommended steps, but the issue is still there. Choose how you’d like to continue and I’ll help with the next step.'
   }
   if (state.stage === 'resolved') {
-    return `Issue resolved. Summary: ${state.resolutionSummary ?? 'The service is working again.'} You tried ${state.completedSteps.length} troubleshooting step${state.completedSteps.length === 1 ? '' : 's'}.`
+    return state.completedSteps.length > 0
+      ? `Issue resolved. Summary: ${state.resolutionSummary ?? 'The service is working again.'} You tried ${state.completedSteps.length} troubleshooting step${state.completedSteps.length === 1 ? '' : 's'}.`
+      : `Great—I’ve marked the issue resolved. ${state.resolutionSummary ?? 'Thanks for letting me know the service is working again.'}.`
   }
   return 'Let’s keep working through this together.'
 }
 
+function customerConfirmsResolved(response: string): boolean {
+  if (/\b(?:not resolved|isn't resolved|is not resolved|still (?:not )?working|didn't help|did not help|no change|not fixed)\b/i.test(response)) return false
+  return /\b(?:resolved|fixed|working again|back online|back up|came back online|restored|solved)\b/i.test(response)
+}
 function identifyFromAnswer(answer: string): TroubleshootingIssueType | null {
   if (/\b(weak signal|limited|coverage|dead zone|bedroom|room)\b/i.test(answer)) return 'Limited WiFi Coverage'
   if (/\b(slow|speed)\b/i.test(answer)) return 'Slow Internet'

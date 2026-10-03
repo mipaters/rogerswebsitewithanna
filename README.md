@@ -39,7 +39,7 @@ When Anna provides a plan recommendation, **Add this plan to cart** transfers th
 
 The **Device Upgrade Journey** walkthrough and upgrade requests in chat launch a dedicated guided flow. Anna asks about the current phone brand, upgrade priorities and comfortable monthly budget, then recommends a matching phone from the device catalog. The recommendation can be added directly to the cart or opened in the phone catalog. Only catalog-listed financing prices are carried as estimates; otherwise the cart and checkout clearly mark device pricing as to be confirmed. Checkout remains a non-purchasing demo.
 
-The other Executive Demo tiles (customer care, personalized offers, roaming, technical support, compare with competitors and multimodal care) each launch their own three-step guided flow with clickable choices, saved answers, and an explicit completion summary. These demos do not depend on Azure OpenAI availability.
+Personalized offers, roaming, technical support, and multimodal care use three-step scripted flows. Customer Care and Compare with Competitors launch bill-image journeys that use Azure OpenAI vision.
 
 ## Anna Internet and home-service troubleshooting
 
@@ -54,3 +54,7 @@ Mobile plans, phone catalog entries, Home Security features and Rogers Bank card
 #### Modem image troubleshooting
 
 During an active Anna troubleshooting journey, customers can take a gateway/modem photo or upload a JPG/JPEG, PNG, or WEBP image (maximum 5 MB). The separate POST /api/image-analysis Azure Function sends the image to the configured Azure OpenAI deployment and returns a visual issue summary, likely cause, confidence, and recommended next step. Images are shown inline in chat with Anna's analysis. The endpoint requires the existing server-side AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT, and API version settings; it never stores or logs image data. This is visual guidance only, not a live network diagnostic.
+
+#### Bill review and competitor comparison journeys
+
+Anna can start a bill review when a customer asks to understand or explain a bill, then prompt for a photo upload. The Executive Demo Customer Care tile starts this bill-review flow. Compare with Competitors asks provider and service details, then analyzes a bill image and compares the visible recurring monthly total with illustrative Rogers reference rates. Annual savings are shown only when a recurring total is clearly detected; otherwise no savings number is invented. Bill image analysis uses the isolated image endpoint, redacts personal identifiers from model output by instruction, and asks customers to cover personal details before upload. Estimates are not quotes and require verification against current offers, eligibility, taxes, fees, discounts and equipment.
