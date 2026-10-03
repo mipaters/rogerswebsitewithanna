@@ -24,27 +24,47 @@ export async function isSpeechAvailable(): Promise<boolean> {
   }
 }
 
+export class SpeechNoMatchError extends Error {}
+export class SpeechCancelledError extends Error {}
+
+let listenGeneration = 0
+let cancelListen: (() => void) | null = null
+
+export function stopListening() {
+  listenGeneration += 1
+  cancelListen?.()
+  cancelListen = null
+}
+
 export async function listenOnce(): Promise<string> {
+  stopListening()
+  const generation = listenGeneration
   const { token, region } = await getToken()
   const sdk = await loadSdk()
+  if (generation !== listenGeneration) throw new SpeechCancelledError()
   const speechConfig = sdk.SpeechConfig.fromAuthorizationToken(token, region)
   speechConfig.speechRecognitionLanguage = 'en-CA'
   const recognizer = new sdk.SpeechRecognizer(speechConfig, sdk.AudioConfig.fromDefaultMicrophoneInput())
   return new Promise((resolve, reject) => {
+    let settled = false
+    const finish = (action: () => void) => {
+      if (settled) return
+      settled = true
+      cancelListen = null
+      try { recognizer.close() } catch { /* already closed */ }
+      action()
+    }
+    cancelListen = () => finish(() => reject(new SpeechCancelledError()))
     recognizer.recognizeOnceAsync(
-      (result) => {
-        recognizer.close()
+      (result) => finish(() => {
         if (result.reason === sdk.ResultReason.RecognizedSpeech && result.text) resolve(result.text)
-        else reject(new Error('I didn’t catch that. Please try again.'))
-      },
-      (error) => {
-        recognizer.close()
-        reject(new Error(typeof error === 'string' ? error : 'Microphone is not available.'))
-      },
+        else if (result.reason === sdk.ResultReason.NoMatch) reject(new SpeechNoMatchError())
+        else reject(new Error('Microphone is not available. Check your browser’s microphone permission.'))
+      }),
+      (error) => finish(() => reject(new Error(typeof error === 'string' ? error : 'Microphone is not available.'))),
     )
   })
 }
-
 let activeSynthesizer: SdkTypes.SpeechSynthesizer | null = null
 
 export function stopSpeaking() {
