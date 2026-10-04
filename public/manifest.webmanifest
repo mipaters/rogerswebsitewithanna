@@ -1,0 +1,12 @@
+{
+  "name": "Rogers — Connection, made for you",
+  "short_name": "Rogers",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#e60614",
+  "theme_color": "#da001b",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
